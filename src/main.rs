@@ -64,18 +64,9 @@ fn handle_redis_value(stream: &mut TcpStream, value: Value) -> Result<()> {
                     {
                         "ping" => write_frame(stream, OwnedFrame::BulkString("PONG".into()))?,
                         "echo" => {
-                            let strings: Vec<String> = values
-                                .into_iter()
-                                .skip(1)
-                                .map(|value| String::from_owned_redis_value(value).unwrap())
-                                .collect::<Vec<String>>();
-
-                            let owned_frames: Vec<OwnedFrame> = strings
-                                .into_iter()
-                                .map(|s| OwnedFrame::BulkString(s.into()))
-                                .collect();
-
-                            write_frame(stream, OwnedFrame::Array(owned_frames))?
+                            assert_eq!(values.len(), 2);
+                            let string = String::from_owned_redis_value(values.get(1).unwrap().clone())?;
+                            write_frame(stream, OwnedFrame::BulkString(string.into()))?
                         }
                         command => panic!("unknown command: {}", command),
                     }
