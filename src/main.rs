@@ -2,13 +2,16 @@ use anyhow::Result;
 use std::{
     io::{Read, Write},
     net::{TcpListener, TcpStream},
+    thread,
 };
 
 fn main() {
     let listener = TcpListener::bind("127.0.0.1:6379").unwrap();
     for stream in listener.incoming() {
         match stream {
-            Ok(stream) => handle_client(stream).unwrap(),
+            Ok(stream) => {
+                thread::spawn(|| handle_client(stream).unwrap());
+            }
             Err(e) => {
                 println!("error: {}", e);
             }
