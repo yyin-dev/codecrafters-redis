@@ -1,6 +1,5 @@
 use anyhow::Result;
 use std::{
-    io::{Read, Write},
     net::{TcpListener, TcpStream},
     thread,
 };
@@ -19,19 +18,32 @@ fn main() {
     }
 }
 
-fn handle_client(mut stream: TcpStream) -> Result<()> {
+fn handle_client(stream: TcpStream) -> Result<()> {
     println!("Connection established");
 
+    let mut parser = redis::Parser::new();
     loop {
-        // Cannot use read_to_string - probably because the bytes are not utf-8
-        let mut buf = [0; 128];
-        let bytes_read = stream.read(&mut buf)?;
+        let result = parser.parse_value(&stream);
 
-        if bytes_read == 0 {
-            continue;
+        match result {
+            Err(error) => {
+                println!("parse error, will drop connection: {:?}", error.category());
+                break;
+            }
+            Ok(value) => match value {
+                redis::Value::Nil => todo!(),
+                redis::Value::Int(_) => todo!(),
+                redis::Value::Data(data) => {
+                    println!("Data: {:?}", data);
+                }
+                redis::Value::Bulk(values) => {
+                    println!("Bulk: {:?}", values);
+                }
+                redis::Value::Status(_) => todo!(),
+                redis::Value::Okay => todo!(),
+            },
         }
-
-        println!("recv: {:?}", buf);
-        stream.write_all("+PONG\r\n".as_bytes())?
     }
+
+    Ok(())
 }
