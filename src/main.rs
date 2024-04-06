@@ -1,5 +1,6 @@
 use anyhow::Result;
 use std::{
+    io::Write,
     net::{TcpListener, TcpStream},
     thread,
 };
@@ -18,7 +19,7 @@ fn main() {
     }
 }
 
-fn handle_client(stream: TcpStream) -> Result<()> {
+fn handle_client(mut stream: TcpStream) -> Result<()> {
     println!("Connection established");
 
     let mut parser = redis::Parser::new();
@@ -38,6 +39,19 @@ fn handle_client(stream: TcpStream) -> Result<()> {
                 }
                 redis::Value::Bulk(values) => {
                     println!("Bulk: {:?}", values);
+                    match &values[0] {
+                        redis::Value::Data(command) => {
+                            match String::from_utf8_lossy(command)
+                                .to_ascii_lowercase()
+                                .as_str()
+                            {
+                                "ping" => stream.write_all("+PONG\r\n".as_bytes()).unwrap(),
+                                "echo" => {}
+                                command => panic!("unknown command: {}", command),
+                            }
+                        }
+                        _ => todo!(),
+                    }
                 }
                 redis::Value::Status(_) => todo!(),
                 redis::Value::Okay => todo!(),
