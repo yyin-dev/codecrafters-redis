@@ -1,3 +1,5 @@
+use crate::mode::Mode;
+use crate::store::Store;
 use redis::{FromRedisValue, RedisResult, Value};
 use redis_protocol::resp2::{encode::encode, types::OwnedFrame, types::Resp2Frame};
 use std::{
@@ -9,9 +11,8 @@ use std::{
 
 use anyhow::Result;
 
-use crate::store::Store;
-
 pub struct Server {
+    mode: Mode,
     store: Arc<Mutex<Store>>,
 }
 
@@ -23,8 +24,9 @@ fn write_frame(stream: &mut TcpStream, frame: OwnedFrame) -> Result<()> {
 }
 
 impl Server {
-    pub fn new() -> Self {
+    pub fn new(mode: Mode) -> Self {
         Self {
+            mode,
             store: Arc::new(Mutex::new(Store::new())),
         }
     }
@@ -100,7 +102,15 @@ impl Server {
                     }
                     "info" => match string_from(1)?.to_ascii_lowercase().as_str() {
                         "replication" => {
-                            write_frame(stream, OwnedFrame::BulkString("role:master".into()))?
+                            let role = match self.mode {
+                                Mode::Master => "master",
+                                Mode::Slave(_) => "slave",
+                            };
+
+                            write_frame(
+                                stream,
+                                OwnedFrame::BulkString(format!("role:{}", role).into()),
+                            )?
                         }
                         info_type => panic!("unknown info type: {}", info_type),
                     },
