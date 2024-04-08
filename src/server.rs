@@ -1,8 +1,15 @@
 use crate::mode::Mode;
 use crate::store::Store;
 use redis::{FromRedisValue, RedisResult, Value};
-use redis_protocol::resp2::{encode::encode, types::OwnedFrame, types::Resp2Frame};
+use redis_protocol::{
+    resp2::{
+        encode::encode,
+        types::{OwnedFrame, Resp2Frame},
+    },
+    types::PATTERN_PUBSUB_PREFIX,
+};
 use std::{
+    fmt::format,
     io::Write,
     net::TcpStream,
     sync::{Arc, Mutex},
@@ -13,6 +20,8 @@ use anyhow::Result;
 
 pub struct Server {
     mode: Mode,
+    replication_id: String,
+    replication_offset: usize,
     store: Arc<Mutex<Store>>,
 }
 
@@ -27,6 +36,8 @@ impl Server {
     pub fn new(mode: Mode) -> Self {
         Self {
             mode,
+            replication_id: "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb".into(),
+            replication_offset: 0,
             store: Arc::new(Mutex::new(Store::new())),
         }
     }
@@ -102,14 +113,25 @@ impl Server {
                     }
                     "info" => match string_from(1)?.to_ascii_lowercase().as_str() {
                         "replication" => {
-                            let role = match self.mode {
-                                Mode::Master => "master",
-                                Mode::Slave(_) => "slave",
+                            let role = {
+                                let role = match self.mode {
+                                    Mode::Master => "master",
+                                    Mode::Slave(_) => "slave",
+                                };
+                                format!("role:{}", role)
                             };
+
+                            let replication_id = format!("master_replid:{}", self.replication_id);
+                            let replication_offset =
+                                format!("master_repl_offset:{}", self.replication_offset);
 
                             write_frame(
                                 stream,
-                                OwnedFrame::BulkString(format!("role:{}", role).into()),
+                                OwnedFrame::BulkString(
+                                    vec![role, replication_id, replication_offset]
+                                        .join("\n")
+                                        .into(),
+                                ),
                             )?
                         }
                         info_type => panic!("unknown info type: {}", info_type),
