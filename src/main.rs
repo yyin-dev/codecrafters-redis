@@ -1,18 +1,25 @@
+mod store;
+
 use anyhow::Result;
 use redis::{FromRedisValue, Value};
 use redis_protocol::resp2::{encode::encode, types::OwnedFrame, types::Resp2Frame};
 use std::{
     io::Write,
     net::{TcpListener, TcpStream},
+    sync::Arc,
     thread,
 };
+use store::Store;
 
 fn main() {
+    let store = Arc::new(Store::new());
+
     let listener = TcpListener::bind("127.0.0.1:6379").unwrap();
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => {
-                thread::spawn(|| handle_client(stream).unwrap());
+                let store = store.clone();
+                thread::spawn(move || handle_client(stream, store).unwrap());
             }
             Err(e) => {
                 println!("error: {}", e);
@@ -28,7 +35,7 @@ fn write_frame(stream: &mut TcpStream, frame: OwnedFrame) -> Result<()> {
     Ok(())
 }
 
-fn handle_client(mut stream: TcpStream) -> Result<()> {
+fn handle_client(mut stream: TcpStream, store: Arc<Store>) -> Result<()> {
     println!("Connection established");
 
     let mut parser = redis::Parser::new();
@@ -36,7 +43,7 @@ fn handle_client(mut stream: TcpStream) -> Result<()> {
         let result = parser.parse_value(&stream);
 
         match result {
-            Ok(value) => handle_redis_value(&mut stream, value)?,
+            Ok(value) => handle_redis_value(&mut stream, store.as_ref(), value)?,
             Err(error) => {
                 println!("parse error, will drop connection: {:?}", error.category());
                 break;
@@ -47,7 +54,7 @@ fn handle_client(mut stream: TcpStream) -> Result<()> {
     Ok(())
 }
 
-fn handle_redis_value(stream: &mut TcpStream, value: Value) -> Result<()> {
+fn handle_redis_value(stream: &mut TcpStream, store: &Store, value: Value) -> Result<()> {
     match value {
         redis::Value::Nil => todo!(),
         redis::Value::Int(_) => todo!(),
@@ -65,8 +72,29 @@ fn handle_redis_value(stream: &mut TcpStream, value: Value) -> Result<()> {
                         "ping" => write_frame(stream, OwnedFrame::BulkString("PONG".into()))?,
                         "echo" => {
                             assert_eq!(values.len(), 2);
-                            let string = String::from_owned_redis_value(values.get(1).unwrap().clone())?;
+                            let string =
+                                String::from_owned_redis_value(values.get(1).unwrap().clone())?;
                             write_frame(stream, OwnedFrame::BulkString(string.into()))?
+                        }
+                        "get" => {
+                            assert_eq!(values.len(), 2);
+                            let key =
+                                String::from_owned_redis_value(values.get(1).unwrap().clone())?;
+                            match store.get(&key) {
+                                None => write_frame(stream, OwnedFrame::BulkString("".into()))?,
+                                Some(value) => {
+                                    write_frame(stream, OwnedFrame::BulkString(value.into()))?
+                                }
+                            }
+                        }
+                        "set" => {
+                            assert_eq!(values.len(), 3);
+                            let key =
+                                String::from_owned_redis_value(values.get(1).unwrap().clone())?;
+                            let value =
+                                String::from_owned_redis_value(values.get(2).unwrap().clone())?;
+                            store.set(key, value);
+                            write_frame(stream, OwnedFrame::SimpleString("OK".into()))?
                         }
                         command => panic!("unknown command: {}", command),
                     }
