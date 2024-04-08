@@ -60,55 +60,54 @@ impl Server {
                     String::from_owned_redis_value(values.get(idx).unwrap().clone())
                 };
 
-                match &values[0] {
-                    redis::Value::Data(command) => {
-                        match String::from_utf8_lossy(command)
-                            .to_ascii_lowercase()
-                            .as_str()
-                        {
-                            "ping" => write_frame(stream, OwnedFrame::BulkString("PONG".into()))?,
-                            "echo" => {
-                                assert_eq!(values.len(), 2);
-                                let string = string_from(1)?;
-                                write_frame(stream, OwnedFrame::BulkString(string.into()))?
+                match string_from(0)?.to_ascii_lowercase().as_str() {
+                    "ping" => write_frame(stream, OwnedFrame::BulkString("PONG".into()))?,
+                    "echo" => {
+                        assert_eq!(values.len(), 2);
+                        let string = string_from(1)?;
+                        write_frame(stream, OwnedFrame::BulkString(string.into()))?
+                    }
+                    "get" => {
+                        let store = self.store.lock().unwrap();
+
+                        assert_eq!(values.len(), 2);
+                        let key = string_from(1)?;
+                        match store.get(&key) {
+                            None => write_frame(stream, OwnedFrame::Null)?,
+                            Some(value) => {
+                                write_frame(stream, OwnedFrame::BulkString(value.into()))?
                             }
-                            "get" => {
-                                let store = self.store.lock().unwrap();
-
-                                assert_eq!(values.len(), 2);
-                                let key = string_from(1)?;
-                                match store.get(&key) {
-                                    None => write_frame(stream, OwnedFrame::Null)?,
-                                    Some(value) => {
-                                        write_frame(stream, OwnedFrame::BulkString(value.into()))?
-                                    }
-                                }
-                            }
-                            "set" => {
-                                let store = self.store.lock().unwrap();
-
-                                assert!(values.len() == 3 || values.len() == 5);
-                                let key = string_from(1)?;
-                                let value = string_from(2)?;
-
-                                let expire_in = if values.len() == 5 {
-                                    let px = string_from(3)?;
-                                    assert_eq!(px.to_ascii_lowercase(), "px");
-                                    let expire_in: u64 = string_from(4)?.parse()?;
-                                    Some(Duration::from_millis(expire_in))
-                                } else {
-                                    None
-                                };
-
-                                store.set(key, value, expire_in);
-                                write_frame(stream, OwnedFrame::SimpleString("OK".into()))?
-                            }
-                            command => panic!("unknown command: {}", command),
                         }
                     }
-                    _ => todo!(),
+                    "set" => {
+                        let store = self.store.lock().unwrap();
+
+                        assert!(values.len() == 3 || values.len() == 5);
+                        let key = string_from(1)?;
+                        let value = string_from(2)?;
+
+                        let expire_in = if values.len() == 5 {
+                            let px = string_from(3)?;
+                            assert_eq!(px.to_ascii_lowercase(), "px");
+                            let expire_in: u64 = string_from(4)?.parse()?;
+                            Some(Duration::from_millis(expire_in))
+                        } else {
+                            None
+                        };
+
+                        store.set(key, value, expire_in);
+                        write_frame(stream, OwnedFrame::SimpleString("OK".into()))?
+                    }
+                    "info" => match string_from(1)?.to_ascii_lowercase().as_str() {
+                        "replication" => {
+                            write_frame(stream, OwnedFrame::BulkString("role:master".into()))?
+                        }
+                        info_type => panic!("unknown info type: {}", info_type),
+                    },
+                    command => panic!("unknown command: {}", command),
                 }
             }
+
             redis::Value::Status(_) => todo!(),
             redis::Value::Okay => todo!(),
         };
