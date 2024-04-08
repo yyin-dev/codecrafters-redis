@@ -1,13 +1,14 @@
 mod store;
 
 use anyhow::Result;
-use redis::{FromRedisValue, Value};
+use redis::{FromRedisValue, RedisResult, Value};
 use redis_protocol::resp2::{encode::encode, types::OwnedFrame, types::Resp2Frame};
 use std::{
     io::Write,
     net::{TcpListener, TcpStream},
     sync::Arc,
     thread,
+    time::Duration,
 };
 use store::Store;
 
@@ -63,6 +64,11 @@ fn handle_redis_value(stream: &mut TcpStream, store: &Store, value: Value) -> Re
         }
         redis::Value::Bulk(values) => {
             println!("Bulk: {:?}", values);
+
+            let string_from = |idx: usize| -> RedisResult<String> {
+                String::from_owned_redis_value(values.get(idx).unwrap().clone())
+            };
+
             match &values[0] {
                 redis::Value::Data(command) => {
                     match String::from_utf8_lossy(command)
@@ -72,14 +78,12 @@ fn handle_redis_value(stream: &mut TcpStream, store: &Store, value: Value) -> Re
                         "ping" => write_frame(stream, OwnedFrame::BulkString("PONG".into()))?,
                         "echo" => {
                             assert_eq!(values.len(), 2);
-                            let string =
-                                String::from_owned_redis_value(values.get(1).unwrap().clone())?;
+                            let string = string_from(1)?;
                             write_frame(stream, OwnedFrame::BulkString(string.into()))?
                         }
                         "get" => {
                             assert_eq!(values.len(), 2);
-                            let key =
-                                String::from_owned_redis_value(values.get(1).unwrap().clone())?;
+                            let key = string_from(1)?;
                             match store.get(&key) {
                                 None => write_frame(stream, OwnedFrame::BulkString("".into()))?,
                                 Some(value) => {
@@ -88,12 +92,20 @@ fn handle_redis_value(stream: &mut TcpStream, store: &Store, value: Value) -> Re
                             }
                         }
                         "set" => {
-                            assert_eq!(values.len(), 3);
-                            let key =
-                                String::from_owned_redis_value(values.get(1).unwrap().clone())?;
-                            let value =
-                                String::from_owned_redis_value(values.get(2).unwrap().clone())?;
-                            store.set(key, value);
+                            assert!(values.len() == 3 || values.len() == 5);
+                            let key = string_from(1)?;
+                            let value = string_from(2)?;
+
+                            let expire_in= if values.len() == 5 {
+                                let px = string_from(3)?;
+                                assert_eq!(px.to_ascii_lowercase(), "px");
+                                let expire_in: u64 = string_from(4)?.parse()?;
+                                Some(Duration::from_millis(expire_in))
+                            } else {
+                                None
+                            };
+
+                            store.set(key, value, expire_in);
                             write_frame(stream, OwnedFrame::SimpleString("OK".into()))?
                         }
                         command => panic!("unknown command: {}", command),
