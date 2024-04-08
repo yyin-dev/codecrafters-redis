@@ -85,7 +85,7 @@ fn handle_redis_value(stream: &mut TcpStream, store: &Store, value: Value) -> Re
                             assert_eq!(values.len(), 2);
                             let key = string_from(1)?;
                             match store.get(&key) {
-                                None => write_frame(stream, OwnedFrame::BulkString("".into()))?,
+                                None => write_frame(stream, OwnedFrame::Null)?,
                                 Some(value) => {
                                     write_frame(stream, OwnedFrame::BulkString(value.into()))?
                                 }
@@ -96,7 +96,7 @@ fn handle_redis_value(stream: &mut TcpStream, store: &Store, value: Value) -> Re
                             let key = string_from(1)?;
                             let value = string_from(2)?;
 
-                            let expire_in= if values.len() == 5 {
+                            let expire_in = if values.len() == 5 {
                                 let px = string_from(3)?;
                                 assert_eq!(px.to_ascii_lowercase(), "px");
                                 let expire_in: u64 = string_from(4)?.parse()?;

@@ -1,5 +1,4 @@
 use std::{
-    alloc::System,
     collections::HashMap,
     sync::{Arc, Mutex},
     time::{Duration, SystemTime},
