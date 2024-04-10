@@ -119,8 +119,7 @@ impl Server {
 
             // PSYNC
             write_frame(&mut master_stream, message::psync())?;
-            let resp = receive(&mut master_stream)?.unwrap();
-            println!("Recv: {:?}", resp);
+            let _resp = receive(&mut master_stream)?.unwrap();
         }
 
         Ok(svr)
