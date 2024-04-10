@@ -1,15 +1,11 @@
 use crate::mode::Mode;
 use crate::store::Store;
 use redis::{FromRedisValue, RedisResult, Value};
-use redis_protocol::{
-    resp2::{
-        encode::encode,
-        types::{OwnedFrame, Resp2Frame},
-    },
-    types::PATTERN_PUBSUB_PREFIX,
+use redis_protocol::resp2::{
+    encode::encode,
+    types::{OwnedFrame, Resp2Frame},
 };
 use std::{
-    fmt::format,
     io::Write,
     net::TcpStream,
     sync::{Arc, Mutex},
@@ -34,12 +30,24 @@ fn write_frame(stream: &mut TcpStream, frame: OwnedFrame) -> Result<()> {
 
 impl Server {
     pub fn new(mode: Mode) -> Self {
-        Self {
-            mode,
+        let svr = Self {
+            mode: mode.clone(),
             replication_id: "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb".into(),
             replication_offset: 0,
             store: Arc::new(Mutex::new(Store::new())),
+        };
+
+        // If it's a slave, handshake with master
+        if let Mode::Slave(master_addr) = mode {
+            let mut master_stream = TcpStream::connect(master_addr).unwrap();
+            write_frame(
+                &mut master_stream,
+                OwnedFrame::Array(vec![OwnedFrame::BulkString("PING".into())]),
+            )
+            .unwrap();
         }
+
+        svr
     }
 
     pub fn handle_new_client(&self, mut stream: TcpStream) -> Result<()> {
