@@ -84,6 +84,23 @@ fn expect(stream: &mut TcpStream, expected: OwnedFrame) -> Result<()> {
     Ok(())
 }
 
+fn print_frame(frame: &OwnedFrame) {
+    match frame {
+        OwnedFrame::SimpleString(s) => {
+            let s = String::from_utf8(s.clone()).unwrap();
+            println!("SimpleString: '{}'", s)
+        }
+        OwnedFrame::Error(_) => todo!(),
+        OwnedFrame::Integer(_) => todo!(),
+        OwnedFrame::BulkString(s) => {
+            let s = String::from_utf8(s.clone()).unwrap();
+            println!("BulkString: '{}'", s)
+        }
+        OwnedFrame::Array(_) => todo!(),
+        OwnedFrame::Null => todo!(),
+    }
+}
+
 impl Server {
     pub fn new(mode: Mode, port: u16) -> Result<Self> {
         let svr = Self {
@@ -119,7 +136,8 @@ impl Server {
 
             // PSYNC
             write_frame(&mut master_stream, message::psync())?;
-            let _resp = receive(&mut master_stream)?.unwrap();
+            let resp = receive(&mut master_stream)?.unwrap();
+            print_frame(&resp);
         }
 
         Ok(svr)
@@ -221,7 +239,20 @@ impl Server {
                     },
                     "replconf" => write_frame(stream, message::ok())?,
                     "psync" => {
-                        write_frame(stream, OwnedFrame::BulkString("FULLRESYNC <REPL_ID> 0".into()))?
+                        let slave_replication_id = string_from(1)?;
+                        let slave_replication_offset: isize = string_from(2)?.parse()?;
+
+                        if slave_replication_id == "?" {
+                            assert_eq!(slave_replication_offset, -1);
+                            write_frame(
+                                stream,
+                                OwnedFrame::BulkString(
+                                    format!("FULLRESYNC {} 0", self.replication_id).into(),
+                                ),
+                            )?
+                        } else {
+                            todo!()
+                        }
                     }
                     command => panic!("unknown command: {}", command),
                 }
