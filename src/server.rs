@@ -1,18 +1,30 @@
 use crate::mode::Mode;
 use crate::store::Store;
+use anyhow::{anyhow, Result};
 use redis::{FromRedisValue, RedisResult, Value};
 use redis_protocol::resp2::{
+    decode::decode,
     encode::encode,
     types::{OwnedFrame, Resp2Frame},
 };
 use std::{
-    io::Write,
+    io::{Read, Write},
     net::TcpStream,
     sync::{Arc, Mutex},
     time::Duration,
 };
 
-use anyhow::Result;
+mod message {
+    use redis_protocol::resp2::types::OwnedFrame;
+
+    pub fn ok() -> OwnedFrame {
+        OwnedFrame::SimpleString("OK".into())
+    }
+
+    pub fn pong() -> OwnedFrame {
+        OwnedFrame::BulkString("PONG".into())
+    }
+}
 
 pub struct Server {
     mode: Mode,
@@ -28,8 +40,38 @@ fn write_frame(stream: &mut TcpStream, frame: OwnedFrame) -> Result<()> {
     Ok(())
 }
 
+fn write_bulk_string_array(stream: &mut TcpStream, strs: Vec<String>) -> Result<()> {
+    let frame = OwnedFrame::Array(
+        strs.into_iter()
+            .map(|s| OwnedFrame::BulkString(s.into()))
+            .collect(),
+    );
+
+    write_frame(stream, frame)
+}
+
+fn receive(stream: &mut TcpStream, expected: OwnedFrame) -> Result<()> {
+    let mut buf = [0; 1024];
+    let num_bytes = stream.read(&mut buf).unwrap();
+    match decode(&buf[..num_bytes]).unwrap() {
+        None => panic!("Expecting {:?}", expected),
+        Some((received, n)) => {
+            assert!(n > 0);
+            if received != expected {
+                return Err(anyhow!(
+                    "Expecting {:?}, received: {:?}",
+                    expected,
+                    received
+                ));
+            }
+        }
+    };
+
+    Ok(())
+}
+
 impl Server {
-    pub fn new(mode: Mode) -> Self {
+    pub fn new(mode: Mode, port: u16) -> Self {
         let svr = Self {
             mode: mode.clone(),
             replication_id: "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb".into(),
@@ -40,11 +82,29 @@ impl Server {
         // If it's a slave, handshake with master
         if let Mode::Slave(master_addr) = mode {
             let mut master_stream = TcpStream::connect(master_addr).unwrap();
+
+            // PING
             write_frame(
                 &mut master_stream,
                 OwnedFrame::Array(vec![OwnedFrame::BulkString("PING".into())]),
             )
             .unwrap();
+            receive(&mut master_stream, message::pong()).unwrap();
+
+            // REPLCONF
+            write_bulk_string_array(
+                &mut master_stream,
+                vec!["REPLCONF".into(), "listening-port".into(), port.to_string()],
+            )
+            .unwrap();
+            receive(&mut master_stream, message::ok()).unwrap();
+
+            write_bulk_string_array(
+                &mut master_stream,
+                vec!["REPLCONF".into(), "capa".into(), "psync2".into()].into(),
+            )
+            .unwrap();
+            receive(&mut master_stream, message::ok()).unwrap();
         }
 
         svr
@@ -82,7 +142,7 @@ impl Server {
                 };
 
                 match string_from(0)?.to_ascii_lowercase().as_str() {
-                    "ping" => write_frame(stream, OwnedFrame::BulkString("PONG".into()))?,
+                    "ping" => write_frame(stream, message::pong())?,
                     "echo" => {
                         assert_eq!(values.len(), 2);
                         let string = string_from(1)?;
@@ -117,7 +177,7 @@ impl Server {
                         };
 
                         store.set(key, value, expire_in);
-                        write_frame(stream, OwnedFrame::SimpleString("OK".into()))?
+                        write_frame(stream, message::ok())?
                     }
                     "info" => match string_from(1)?.to_ascii_lowercase().as_str() {
                         "replication" => {
@@ -144,6 +204,7 @@ impl Server {
                         }
                         info_type => panic!("unknown info type: {}", info_type),
                     },
+                    "replconf" => write_frame(stream, message::ok())?,
                     command => panic!("unknown command: {}", command),
                 }
             }

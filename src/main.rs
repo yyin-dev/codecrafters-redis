@@ -38,9 +38,10 @@ fn main() {
     };
     println!("mode: {:?}", mode);
 
-    let server = Arc::new(server::Server::new(mode));
+    let port = cli.port.unwrap_or(6379);
+    let sockaddr = SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), port);
 
-    let sockaddr = SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), cli.port.unwrap_or(6379));
+    let server = Arc::new(server::Server::new(mode, port));
     let listener = TcpListener::bind(sockaddr).unwrap();
     for stream in listener.incoming() {
         match stream {
