@@ -22,7 +22,7 @@ mod message {
     }
 
     pub fn pong() -> OwnedFrame {
-        OwnedFrame::BulkString("PONG".into())
+        OwnedFrame::SimpleString("PONG".into())
     }
 }
 
