@@ -14,8 +14,18 @@ use std::{
     time::Duration,
 };
 
+fn to_bulk_string_array(strs: Vec<String>) -> OwnedFrame {
+    OwnedFrame::Array(
+        strs.into_iter()
+            .map(|s| OwnedFrame::BulkString(s.into()))
+            .collect(),
+    )
+}
+
 mod message {
     use redis_protocol::resp2::types::OwnedFrame;
+
+    use super::to_bulk_string_array;
 
     pub fn ok() -> OwnedFrame {
         OwnedFrame::SimpleString("OK".into())
@@ -23,6 +33,10 @@ mod message {
 
     pub fn pong() -> OwnedFrame {
         OwnedFrame::SimpleString("PONG".into())
+    }
+
+    pub fn psync() -> OwnedFrame {
+        to_bulk_string_array(vec!["PSYNC".into(), "?".into(), "-1".into()])
     }
 }
 
@@ -41,37 +55,37 @@ fn write_frame(stream: &mut TcpStream, frame: OwnedFrame) -> Result<()> {
 }
 
 fn write_bulk_string_array(stream: &mut TcpStream, strs: Vec<String>) -> Result<()> {
-    let frame = OwnedFrame::Array(
-        strs.into_iter()
-            .map(|s| OwnedFrame::BulkString(s.into()))
-            .collect(),
-    );
-
-    write_frame(stream, frame)
+    write_frame(stream, to_bulk_string_array(strs))
 }
 
-fn receive(stream: &mut TcpStream, expected: OwnedFrame) -> Result<()> {
+fn receive(stream: &mut TcpStream) -> Result<Option<OwnedFrame>> {
     let mut buf = [0; 1024];
     let num_bytes = stream.read(&mut buf).unwrap();
     match decode(&buf[..num_bytes]).unwrap() {
-        None => panic!("Expecting {:?}", expected),
-        Some((received, n)) => {
+        None => Ok(None),
+        Some((frame, n)) => {
             assert!(n > 0);
-            if received != expected {
-                return Err(anyhow!(
-                    "Expecting {:?}, received: {:?}",
-                    expected,
-                    received
-                ));
-            }
+            Ok(Some(frame))
         }
-    };
+    }
+}
+
+fn expect(stream: &mut TcpStream, expected: OwnedFrame) -> Result<()> {
+    let received = receive(stream)?.unwrap();
+
+    if received != expected {
+        return Err(anyhow!(
+            "Expecting {:?}, received: {:?}",
+            expected,
+            received
+        ));
+    }
 
     Ok(())
 }
 
 impl Server {
-    pub fn new(mode: Mode, port: u16) -> Self {
+    pub fn new(mode: Mode, port: u16) -> Result<Self> {
         let svr = Self {
             mode: mode.clone(),
             replication_id: "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb".into(),
@@ -81,33 +95,35 @@ impl Server {
 
         // If it's a slave, handshake with master
         if let Mode::Slave(master_addr) = mode {
-            let mut master_stream = TcpStream::connect(master_addr).unwrap();
+            let mut master_stream = TcpStream::connect(master_addr)?;
 
             // PING
             write_frame(
                 &mut master_stream,
                 OwnedFrame::Array(vec![OwnedFrame::BulkString("PING".into())]),
-            )
-            .unwrap();
-            receive(&mut master_stream, message::pong()).unwrap();
+            )?;
+            expect(&mut master_stream, message::pong())?;
 
             // REPLCONF
             write_bulk_string_array(
                 &mut master_stream,
                 vec!["REPLCONF".into(), "listening-port".into(), port.to_string()],
-            )
-            .unwrap();
-            receive(&mut master_stream, message::ok()).unwrap();
+            )?;
+            expect(&mut master_stream, message::ok())?;
 
             write_bulk_string_array(
                 &mut master_stream,
                 vec!["REPLCONF".into(), "capa".into(), "psync2".into()].into(),
-            )
-            .unwrap();
-            receive(&mut master_stream, message::ok()).unwrap();
+            )?;
+            expect(&mut master_stream, message::ok())?;
+
+            // PSYNC
+            write_frame(&mut master_stream, message::psync())?;
+            let resp = receive(&mut master_stream)?.unwrap();
+            println!("Recv: {:?}", resp);
         }
 
-        svr
+        Ok(svr)
     }
 
     pub fn handle_new_client(&self, mut stream: TcpStream) -> Result<()> {
@@ -205,6 +221,9 @@ impl Server {
                         info_type => panic!("unknown info type: {}", info_type),
                     },
                     "replconf" => write_frame(stream, message::ok())?,
+                    "psync" => {
+                        write_frame(stream, OwnedFrame::BulkString("FULLRESYNC <REPL_ID> 0".into()))?
+                    }
                     command => panic!("unknown command: {}", command),
                 }
             }
