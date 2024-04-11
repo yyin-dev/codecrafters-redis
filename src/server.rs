@@ -264,16 +264,15 @@ impl Server {
                             )?;
 
                             // Send RDB file. Assume empty for this challenge
+                            // Format: $<length_of_file>\r\n<contents_of_file>
+                            // Like bulk string, but without trailing \r\n
                             let empty_rdb_base64 = "UkVESVMwMDEx+glyZWRpcy12ZXIFNy4yLjD6CnJlZGlzLWJpdHPAQPoFY3RpbWXCbQi8ZfoIdXNlZC1tZW3CsMQQAPoIYW9mLWJhc2XAAP/wbjv+wP9aog==";
                             let empty_rdb = base64::engine::general_purpose::STANDARD
                                 .decode(empty_rdb_base64)?;
-                            let buf = vec![
-                                empty_rdb.len().to_string().as_bytes(),
-                                "\r\n".as_bytes(),
-                                &empty_rdb,
-                            ]
-                            .concat();
-                            stream.write_all(&buf)?;
+                            let bulk_string = OwnedFrame::BulkString(empty_rdb);
+                            let mut buf = vec![0; bulk_string.encode_len()];
+                            encode(&mut buf, &bulk_string)?;
+                            stream.write_all(&buf[..buf.len() - 2])?;
                             println!("Written rdb file");
                         } else {
                             todo!()
