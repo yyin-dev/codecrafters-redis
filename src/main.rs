@@ -1,5 +1,7 @@
+mod master;
+mod message;
 mod mode;
-mod server;
+mod replica;
 mod store;
 use clap::Parser;
 use mode::Mode;
@@ -41,16 +43,35 @@ fn main() {
     let port = cli.port.unwrap_or(6379);
     let sockaddr = SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), port);
 
-    let server = Arc::new(server::Server::new(mode, port).unwrap());
-    let listener = TcpListener::bind(sockaddr).unwrap();
-    for stream in listener.incoming() {
-        match stream {
-            Ok(stream) => {
-                let server = server.clone();
-                thread::spawn(move || server.handle_new_client(stream));
+    match mode {
+        Mode::Master => {
+            let master = Arc::new(master::Master::new().unwrap());
+            let listener = TcpListener::bind(sockaddr).unwrap();
+            for stream in listener.incoming() {
+                match stream {
+                    Ok(stream) => {
+                        let master = master.clone();
+                        thread::spawn(move || master.handle_connection(stream));
+                    }
+                    Err(e) => {
+                        println!("error: {}", e);
+                    }
+                }
             }
-            Err(e) => {
-                println!("error: {}", e);
+        }
+        Mode::Slave(master_sockaddr) => {
+            let listener = TcpListener::bind(sockaddr).unwrap();
+            let replica = Arc::new(replica::Replica::new(master_sockaddr, port).unwrap());
+            for stream in listener.incoming() {
+                match stream {
+                    Ok(stream) => {
+                        let replica = replica.clone();
+                        thread::spawn(move || replica.handle_connection(stream));
+                    }
+                    Err(e) => {
+                        println!("error: {}", e);
+                    }
+                }
             }
         }
     }

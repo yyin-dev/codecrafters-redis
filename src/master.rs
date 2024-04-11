@@ -1,48 +1,20 @@
-use crate::mode::Mode;
+use crate::message;
 use crate::store::Store;
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use base64::Engine;
 use redis::{FromRedisValue, RedisResult, Value};
 use redis_protocol::resp2::{
-    decode::decode,
     encode::encode,
     types::{OwnedFrame, Resp2Frame},
 };
 use std::{
-    io::{Read, Write},
+    io::Write,
     net::TcpStream,
     sync::{Arc, Mutex},
     time::Duration,
 };
 
-fn to_bulk_string_array(strs: Vec<String>) -> OwnedFrame {
-    OwnedFrame::Array(
-        strs.into_iter()
-            .map(|s| OwnedFrame::BulkString(s.into()))
-            .collect(),
-    )
-}
-
-mod message {
-    use redis_protocol::resp2::types::OwnedFrame;
-
-    use super::to_bulk_string_array;
-
-    pub fn ok() -> OwnedFrame {
-        OwnedFrame::SimpleString("OK".into())
-    }
-
-    pub fn pong() -> OwnedFrame {
-        OwnedFrame::SimpleString("PONG".into())
-    }
-
-    pub fn psync() -> OwnedFrame {
-        to_bulk_string_array(vec!["PSYNC".into(), "?".into(), "-1".into()])
-    }
-}
-
-pub struct Server {
-    mode: Mode,
+pub struct Master {
     replication_id: String,
     replication_offset: usize,
     store: Arc<Mutex<Store>>,
@@ -55,113 +27,24 @@ fn write_frame(stream: &mut TcpStream, frame: OwnedFrame) -> Result<()> {
     Ok(())
 }
 
-fn write_bulk_string_array(stream: &mut TcpStream, strs: Vec<String>) -> Result<()> {
-    write_frame(stream, to_bulk_string_array(strs))
-}
-
-fn receive_raw(stream: &mut TcpStream) -> Result<Vec<u8>> {
-    let mut buf = [0; 1024];
-    let num_bytes = stream.read(&mut buf)?;
-    println!("{} bytes read", num_bytes);
-    Ok(buf[..num_bytes].to_vec())
-}
-
-fn receive(stream: &mut TcpStream) -> Result<Option<OwnedFrame>> {
-    let mut buf = [0; 1024];
-    let num_bytes = stream.read(&mut buf).unwrap();
-    match decode(&buf[..num_bytes]).unwrap() {
-        None => Ok(None),
-        Some((frame, n)) => {
-            assert!(n > 0);
-            Ok(Some(frame))
-        }
-    }
-}
-
-fn expect(stream: &mut TcpStream, expected: OwnedFrame) -> Result<()> {
-    let received = receive(stream)?.unwrap();
-
-    if received != expected {
-        return Err(anyhow!(
-            "Expecting {:?}, received: {:?}",
-            expected,
-            received
-        ));
-    }
-
-    Ok(())
-}
-
-fn print_frame(frame: &OwnedFrame) {
-    match frame {
-        OwnedFrame::SimpleString(s) => {
-            let s = String::from_utf8(s.clone()).unwrap();
-            println!("SimpleString: '{}'", s)
-        }
-        OwnedFrame::Error(_) => todo!(),
-        OwnedFrame::Integer(_) => todo!(),
-        OwnedFrame::BulkString(s) => {
-            let s = String::from_utf8(s.clone()).unwrap();
-            println!("BulkString: '{}'", s)
-        }
-        OwnedFrame::Array(_) => todo!(),
-        OwnedFrame::Null => todo!(),
-    }
-}
-
-impl Server {
-    pub fn new(mode: Mode, port: u16) -> Result<Self> {
-        let svr = Self {
-            mode: mode.clone(),
+impl Master {
+    pub fn new() -> Result<Self> {
+        let master = Self {
             replication_id: "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb".into(),
             replication_offset: 0,
             store: Arc::new(Mutex::new(Store::new())),
         };
 
-        // If it's a slave, handshake with master
-        if let Mode::Slave(master_addr) = mode {
-            let mut master_stream = TcpStream::connect(master_addr)?;
-
-            // PING
-            write_frame(
-                &mut master_stream,
-                OwnedFrame::Array(vec![OwnedFrame::BulkString("PING".into())]),
-            )?;
-            expect(&mut master_stream, message::pong())?;
-
-            // REPLCONF
-            write_bulk_string_array(
-                &mut master_stream,
-                vec!["REPLCONF".into(), "listening-port".into(), port.to_string()],
-            )?;
-            expect(&mut master_stream, message::ok())?;
-
-            write_bulk_string_array(
-                &mut master_stream,
-                vec!["REPLCONF".into(), "capa".into(), "psync2".into()].into(),
-            )?;
-            expect(&mut master_stream, message::ok())?;
-
-            // PSYNC
-            write_frame(&mut master_stream, message::psync())?;
-            let resp = receive(&mut master_stream)?.unwrap();
-            print_frame(&resp);
-            let rdb_file = receive_raw(&mut master_stream)?;
-            println!("Received rdb file of {} bytes", rdb_file.len());
-
-            println!("Finished handshaking!");
-        }
-
-        Ok(svr)
+        Ok(master)
     }
 
-    pub fn handle_new_client(&self, mut stream: TcpStream) -> Result<()> {
+    pub fn handle_connection(&self, mut stream: TcpStream) -> Result<()> {
         let mut parser = redis::Parser::new();
         loop {
             let result = parser.parse_value(&stream);
 
             match result {
-                Ok(value) => self.handle_redis_value(&mut stream, value)?,
+                Ok(value) => self.handle_value(&mut stream, value)?,
                 Err(error) => {
                     println!("Error: {:?}, will close connection", error.category());
                     break;
@@ -172,7 +55,7 @@ impl Server {
         Ok(())
     }
 
-    fn handle_redis_value(&self, stream: &mut TcpStream, value: Value) -> Result<()> {
+    fn handle_value(&self, stream: &mut TcpStream, value: Value) -> Result<()> {
         match value {
             redis::Value::Nil => todo!(),
             redis::Value::Int(_) => todo!(),
@@ -226,14 +109,7 @@ impl Server {
                     }
                     "info" => match string_from(1)?.to_ascii_lowercase().as_str() {
                         "replication" => {
-                            let role = {
-                                let role = match self.mode {
-                                    Mode::Master => "master",
-                                    Mode::Slave(_) => "slave",
-                                };
-                                format!("role:{}", role)
-                            };
-
+                            let role = String::from("role:master");
                             let replication_id = format!("master_replid:{}", self.replication_id);
                             let replication_offset =
                                 format!("master_repl_offset:{}", self.replication_offset);
