@@ -1,6 +1,7 @@
 use crate::mode::Mode;
 use crate::store::Store;
 use anyhow::{anyhow, Result};
+use base64::Engine;
 use redis::{FromRedisValue, RedisResult, Value};
 use redis_protocol::resp2::{
     decode::decode,
@@ -56,6 +57,13 @@ fn write_frame(stream: &mut TcpStream, frame: OwnedFrame) -> Result<()> {
 
 fn write_bulk_string_array(stream: &mut TcpStream, strs: Vec<String>) -> Result<()> {
     write_frame(stream, to_bulk_string_array(strs))
+}
+
+fn receive_raw(stream: &mut TcpStream) -> Result<Vec<u8>> {
+    let mut buf = [0; 1024];
+    let num_bytes = stream.read(&mut buf)?;
+    println!("{} bytes read", num_bytes);
+    Ok(buf[..num_bytes].to_vec())
 }
 
 fn receive(stream: &mut TcpStream) -> Result<Option<OwnedFrame>> {
@@ -138,6 +146,10 @@ impl Server {
             write_frame(&mut master_stream, message::psync())?;
             let resp = receive(&mut master_stream)?.unwrap();
             print_frame(&resp);
+            let rdb_file = receive_raw(&mut master_stream)?;
+            println!("Received rdb file of {} bytes", rdb_file.len());
+
+            println!("Finished handshaking!");
         }
 
         Ok(svr)
@@ -249,7 +261,20 @@ impl Server {
                                 OwnedFrame::BulkString(
                                     format!("FULLRESYNC {} 0", self.replication_id).into(),
                                 ),
-                            )?
+                            )?;
+
+                            // Send RDB file. Assume empty for this challenge
+                            let empty_rdb_base64 = "UkVESVMwMDEx+glyZWRpcy12ZXIFNy4yLjD6CnJlZGlzLWJpdHPAQPoFY3RpbWXCbQi8ZfoIdXNlZC1tZW3CsMQQAPoIYW9mLWJhc2XAAP/wbjv+wP9aog==";
+                            let empty_rdb = base64::engine::general_purpose::STANDARD
+                                .decode(empty_rdb_base64)?;
+                            let buf = vec![
+                                empty_rdb.len().to_string().as_bytes(),
+                                "\r\n".as_bytes(),
+                                &empty_rdb,
+                            ]
+                            .concat();
+                            stream.write_all(&buf)?;
+                            println!("Written rdb file");
                         } else {
                             todo!()
                         }
