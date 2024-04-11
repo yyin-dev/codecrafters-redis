@@ -24,6 +24,8 @@ fn to_bulk_string_array(strs: Vec<String>) -> OwnedFrame {
 }
 
 pub struct Replica {
+    master_replication_id: String,
+    replication_offset: usize,
     store: Arc<Mutex<Store>>,
 }
 
@@ -91,6 +93,8 @@ fn print_frame(frame: &OwnedFrame) {
 impl Replica {
     pub fn new(master_sockaddr: SocketAddr, port: u16) -> Result<Self> {
         let replica = Self {
+            master_replication_id: "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb".into(),
+            replication_offset: 0,
             store: Arc::new(Mutex::new(Store::new())),
         };
 
@@ -198,7 +202,25 @@ impl Replica {
                         store.set(key, value, expire_in);
                         write_frame(stream, message::ok())?
                     }
+                    "info" => match string_from(1)?.to_ascii_lowercase().as_str() {
+                        "replication" => {
+                            let role = String::from("role:slave");
+                            let replication_id =
+                                format!("master_replid:{}", self.master_replication_id);
+                            let replication_offset =
+                                format!("master_repl_offset:{}", self.replication_offset);
 
+                            write_frame(
+                                stream,
+                                OwnedFrame::BulkString(
+                                    vec![role, replication_id, replication_offset]
+                                        .join("\n")
+                                        .into(),
+                                ),
+                            )?
+                        }
+                        info_type => panic!("unknown info type: {}", info_type),
+                    },
                     command => panic!("unknown command: {}", command),
                 }
             }
