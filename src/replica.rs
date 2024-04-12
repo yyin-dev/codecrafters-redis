@@ -8,7 +8,7 @@ use redis_protocol::resp2::{
     types::{OwnedFrame, Resp2Frame},
 };
 use std::{
-    io::{Read, Write},
+    io::{BufReader, Cursor, Read, Write},
     net::{SocketAddr, TcpStream},
     sync::{Arc, Mutex},
     thread,
@@ -140,6 +140,11 @@ impl Replica {
         let master_replication_id = fullresync_resp.split_ascii_whitespace().nth(1).unwrap();
         let rdb_file = receive_raw(&mut master_stream)?;
         println!("Received rdb file of {} bytes", rdb_file.len());
+        rdb::parse(
+            Cursor::new(rdb_file),
+            rdb::formatter::JSON::new(),
+            rdb::filter::Simple::new(),
+        )?;
 
         println!("Finished handshaking!");
         let replica = Arc::new(Self {
