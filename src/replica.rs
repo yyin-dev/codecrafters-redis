@@ -9,9 +9,9 @@ use redis_protocol::resp2::{
 };
 use std::{
     io::{Read, Write},
-    net::SocketAddr,
-    net::TcpStream,
+    net::{SocketAddr, TcpStream},
     sync::{Arc, Mutex},
+    thread,
     time::Duration,
 };
 
@@ -21,12 +21,6 @@ fn to_bulk_string_array(strs: Vec<String>) -> OwnedFrame {
             .map(|s| OwnedFrame::BulkString(s.into()))
             .collect(),
     )
-}
-
-pub struct Replica {
-    master_replication_id: String,
-    replication_offset: usize,
-    store: Arc<Mutex<Store>>,
 }
 
 fn write_frame(stream: &mut TcpStream, frame: OwnedFrame) -> Result<()> {
@@ -59,6 +53,21 @@ fn receive(stream: &mut TcpStream) -> Result<Option<OwnedFrame>> {
     }
 }
 
+fn receive_string(stream: &mut TcpStream) -> Result<Option<String>> {
+    let frame = receive(stream)?;
+
+    if let Some(frame) = frame {
+        match frame {
+            OwnedFrame::SimpleString(s) | OwnedFrame::BulkString(s) => {
+                Ok(Some(String::from_utf8(s)?))
+            }
+            _ => Err(anyhow!("Not a string")),
+        }
+    } else {
+        Ok(None)
+    }
+}
+
 fn expect(stream: &mut TcpStream, expected: OwnedFrame) -> Result<()> {
     let received = receive(stream)?.unwrap();
 
@@ -73,6 +82,7 @@ fn expect(stream: &mut TcpStream, expected: OwnedFrame) -> Result<()> {
     Ok(())
 }
 
+#[allow(dead_code)]
 fn print_frame(frame: &OwnedFrame) {
     match frame {
         OwnedFrame::SimpleString(s) => {
@@ -85,19 +95,22 @@ fn print_frame(frame: &OwnedFrame) {
             let s = String::from_utf8(s.clone()).unwrap();
             println!("BulkString: '{}'", s)
         }
-        OwnedFrame::Array(_) => todo!(),
+        OwnedFrame::Array(vs) => {
+            let s: Vec<String> = vs.iter().map(|f| f.to_string().unwrap()).collect();
+            println!("Array: {:?}", s);
+        }
         OwnedFrame::Null => todo!(),
     }
 }
 
-impl Replica {
-    pub fn new(master_sockaddr: SocketAddr, port: u16) -> Result<Self> {
-        let replica = Self {
-            master_replication_id: "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb".into(),
-            replication_offset: 0,
-            store: Arc::new(Mutex::new(Store::new())),
-        };
+pub struct Replica {
+    master_replication_id: String,
+    replication_offset: usize,
+    store: Arc<Mutex<Store>>,
+}
 
+impl Replica {
+    pub fn new(master_sockaddr: SocketAddr, port: u16) -> Result<Arc<Self>> {
         // If it's a slave, handshake with master
         let mut master_stream = TcpStream::connect(master_sockaddr)?;
 
@@ -123,14 +136,36 @@ impl Replica {
 
         // PSYNC
         write_frame(&mut master_stream, message::psync())?;
-        let resp = receive(&mut master_stream)?.unwrap();
-        print_frame(&resp);
+        let fullresync_resp = receive_string(&mut master_stream)?.unwrap();
+        let master_replication_id = fullresync_resp.split_ascii_whitespace().nth(1).unwrap();
         let rdb_file = receive_raw(&mut master_stream)?;
         println!("Received rdb file of {} bytes", rdb_file.len());
 
         println!("Finished handshaking!");
+        let replica = Arc::new(Self {
+            master_replication_id: master_replication_id.into(),
+            replication_offset: 0,
+            store: Arc::new(Mutex::new(Store::new())),
+        });
+
+        let replica_clone = replica.clone();
+        thread::spawn(move || replica_clone.handle_replication(master_stream));
 
         Ok(replica)
+    }
+
+    fn handle_replication(&self, mut master_stream: TcpStream) -> Result<()> {
+        loop {
+            match receive(&mut master_stream)? {
+                None => {
+                    println!("No more messages, will close connection");
+                    break;
+                }
+                Some(frame) => print_frame(&frame),
+            }
+        }
+
+        Ok(())
     }
 
     pub fn handle_connection(&self, mut stream: TcpStream) -> Result<()> {

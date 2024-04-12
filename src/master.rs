@@ -18,6 +18,7 @@ pub struct Master {
     replication_id: String,
     replication_offset: usize,
     store: Arc<Mutex<Store>>,
+    replicas: Arc<Mutex<Vec<TcpStream>>>,
 }
 
 fn write_frame(stream: &mut TcpStream, frame: OwnedFrame) -> Result<()> {
@@ -26,13 +27,23 @@ fn write_frame(stream: &mut TcpStream, frame: OwnedFrame) -> Result<()> {
     stream.write_all(&buf)?;
     Ok(())
 }
-
+fn to_bulk_string_array(strs: Vec<String>) -> OwnedFrame {
+    OwnedFrame::Array(
+        strs.into_iter()
+            .map(|s| OwnedFrame::BulkString(s.into()))
+            .collect(),
+    )
+}
+fn write_bulk_string_array(stream: &mut TcpStream, strs: Vec<String>) -> Result<()> {
+    write_frame(stream, to_bulk_string_array(strs))
+}
 impl Master {
     pub fn new() -> Result<Self> {
         let master = Self {
             replication_id: "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb".into(),
             replication_offset: 0,
             store: Arc::new(Mutex::new(Store::new())),
+            replicas: Arc::new(Mutex::new(Vec::new())),
         };
 
         Ok(master)
@@ -40,28 +51,40 @@ impl Master {
 
     pub fn handle_connection(&self, mut stream: TcpStream) -> Result<()> {
         let mut parser = redis::Parser::new();
-        loop {
+
+        let mut is_replica = false;
+        while !is_replica {
             let result = parser.parse_value(&stream);
 
             match result {
-                Ok(value) => self.handle_value(&mut stream, value)?,
                 Err(error) => {
                     println!("Error: {:?}, will close connection", error.category());
                     break;
                 }
+                Ok(value) => {
+                    is_replica = self.handle_value(&mut stream, value)?;
+                }
             }
+        }
+
+        if is_replica {
+            // TODO: Call handle_replica() to handle commands like ping, replconf, psync, etc.
+            self.replicas.lock().unwrap().push(stream);
         }
 
         Ok(())
     }
 
-    fn handle_value(&self, stream: &mut TcpStream, value: Value) -> Result<()> {
+    // Return true if this connection is from a replica (b/c we just completed a handshake)
+    fn handle_value(&self, stream: &mut TcpStream, value: Value) -> Result<bool> {
+        let mut is_replica = false;
+
         match value {
             redis::Value::Nil => todo!(),
             redis::Value::Int(_) => todo!(),
-            redis::Value::Data(data) => {
-                println!("Data: {:?}", data);
-            }
+            redis::Value::Data(_) => todo!(),
+            redis::Value::Status(_) => todo!(),
+            redis::Value::Okay => todo!(),
             redis::Value::Bulk(values) => {
                 println!("Bulk: {:?}", values);
 
@@ -105,7 +128,21 @@ impl Master {
                         };
 
                         store.set(key, value, expire_in);
-                        write_frame(stream, message::ok())?
+                        write_frame(stream, message::ok())?;
+
+                        // Replications
+                        let mut replicas = self.replicas.lock().unwrap();
+                        let replication_cmd: Vec<String> = values
+                            .iter()
+                            .map(|value| String::from_owned_redis_value(value.clone()).unwrap())
+                            .collect();
+                        println!("Replication cmd: {:?}", replication_cmd);
+                        replicas
+                            .iter_mut()
+                            .map(|replica_stream| {
+                                write_bulk_string_array(replica_stream, replication_cmd.clone())
+                            })
+                            .collect::<Result<Vec<()>>>()?;
                     }
                     "info" => match string_from(1)?.to_ascii_lowercase().as_str() {
                         "replication" => {
@@ -150,6 +187,8 @@ impl Master {
                             encode(&mut buf, &bulk_string)?;
                             stream.write_all(&buf[..buf.len() - 2])?;
                             println!("Written rdb file");
+
+                            is_replica = true;
                         } else {
                             todo!()
                         }
@@ -157,11 +196,8 @@ impl Master {
                     command => panic!("unknown command: {}", command),
                 }
             }
-
-            redis::Value::Status(_) => todo!(),
-            redis::Value::Okay => todo!(),
         };
 
-        Ok(())
+        Ok(is_replica)
     }
 }
