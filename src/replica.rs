@@ -140,11 +140,15 @@ impl Replica {
         let master_replication_id = fullresync_resp.split_ascii_whitespace().nth(1).unwrap();
         let rdb_file = receive_raw(&mut master_stream)?;
         println!("Received rdb file of {} bytes", rdb_file.len());
-        rdb::parse(
+
+        match rdb::parse(
             Cursor::new(rdb_file),
             rdb::formatter::JSON::new(),
             rdb::filter::Simple::new(),
-        )?;
+        ) {
+            Ok(()) => (),
+            Err(err) => println!("Error parsing rdb file: {:?}", err),
+        };
 
         println!("Finished handshaking!");
         let replica = Arc::new(Self {
