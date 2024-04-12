@@ -161,8 +161,54 @@ impl Replica {
                     println!("No more messages, will close connection");
                     break;
                 }
-                Some(frame) => print_frame(&frame),
+                Some(frame) => {
+                    print_frame(&frame);
+                    self.handle_propogation(frame)?;
+                }
             }
+        }
+
+        Ok(())
+    }
+
+    fn handle_propogation(&self, frame: OwnedFrame) -> Result<()> {
+        match frame {
+            OwnedFrame::SimpleString(_) => todo!(),
+            OwnedFrame::Error(_) => todo!(),
+            OwnedFrame::Integer(_) => todo!(),
+            OwnedFrame::BulkString(_) => todo!(),
+            OwnedFrame::Array(values) => {
+                let string_from = |idx| -> Result<String> {
+                    let frame: &OwnedFrame = values.get(idx).unwrap();
+                    match frame.to_string() {
+                        None => Err(anyhow!("to_string failed")),
+                        Some(s) => Ok(s),
+                    }
+                };
+
+                match string_from(0)?.to_ascii_lowercase().as_str() {
+                    "set" => {
+                        let store = self.store.lock().unwrap();
+
+                        assert!(values.len() == 3 || values.len() == 5);
+                        let key = string_from(1)?;
+                        let value = string_from(2)?;
+
+                        let expire_in = if values.len() == 5 {
+                            let px = string_from(3)?;
+                            assert_eq!(px.to_ascii_lowercase(), "px");
+                            let expire_in: u64 = string_from(4)?.parse()?;
+                            Some(Duration::from_millis(expire_in))
+                        } else {
+                            None
+                        };
+
+                        store.set(key, value, expire_in);
+                    }
+                    command => panic!("unknown command: {}", command),
+                }
+            }
+            OwnedFrame::Null => todo!(),
         }
 
         Ok(())
