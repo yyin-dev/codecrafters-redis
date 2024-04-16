@@ -61,7 +61,7 @@ fn main() {
         }
         Mode::Slave(master_sockaddr) => {
             let listener = TcpListener::bind(sockaddr).unwrap();
-            let replica = Arc::new(replica::Replica::new(master_sockaddr, port).unwrap());
+            let replica = replica::Replica::new(master_sockaddr, port).unwrap();
             for stream in listener.incoming() {
                 match stream {
                     Ok(stream) => {
