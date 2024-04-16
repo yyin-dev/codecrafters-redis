@@ -8,7 +8,7 @@ use redis_protocol::resp2::{
     types::{OwnedFrame, Resp2Frame},
 };
 use std::{
-    io::{BufReader, Cursor, Read, Write},
+    io::{Read, Write},
     net::{SocketAddr, TcpStream},
     sync::{Arc, Mutex},
     thread,
@@ -26,6 +26,12 @@ fn to_bulk_string_array(strs: Vec<String>) -> OwnedFrame {
 fn write_frame(stream: &mut TcpStream, frame: OwnedFrame) -> Result<()> {
     let mut buf = vec![0; frame.encode_len()];
     encode(&mut buf, &frame)?;
+    stream.write_all(&buf)?;
+    Ok(())
+}
+
+fn write_null_bulk_string(stream: &mut TcpStream) -> Result<()> {
+    let buf = "$-1\r\n".as_bytes();
     stream.write_all(&buf)?;
     Ok(())
 }
@@ -82,7 +88,6 @@ fn expect(stream: &mut TcpStream, expected: OwnedFrame) -> Result<()> {
     Ok(())
 }
 
-#[allow(dead_code)]
 fn print_frame(frame: &OwnedFrame) {
     match frame {
         OwnedFrame::SimpleString(s) => {
@@ -138,17 +143,24 @@ impl Replica {
         write_frame(&mut master_stream, message::psync())?;
         let fullresync_resp = receive_string(&mut master_stream)?.unwrap();
         let master_replication_id = fullresync_resp.split_ascii_whitespace().nth(1).unwrap();
-        let rdb_file = receive_raw(&mut master_stream)?;
-        println!("Received rdb file of {} bytes", rdb_file.len());
+        println!("Master replication id: {}", master_replication_id);
+        let rdb_file = {
+            // Format: $<length_of_file>\r\n<contents_of_file>
+            // Like bulk string, but without trailing \r\n
+            // Convert to bulk string and parse
+            let mut rdb_file_resp = receive_raw(&mut master_stream)?;
+            rdb_file_resp.push('\r' as u8);
+            rdb_file_resp.push('\n' as u8);
+            let (as_bulk_string, num_bytes) = decode(&rdb_file_resp)?.unwrap();
+            assert_eq!(num_bytes, rdb_file_resp.len());
 
-        match rdb::parse(
-            Cursor::new(rdb_file),
-            rdb::formatter::JSON::new(),
-            rdb::filter::Simple::new(),
-        ) {
-            Ok(()) => (),
-            Err(err) => println!("Error parsing rdb file: {:?}", err),
+            if let OwnedFrame::BulkString(v) = as_bulk_string {
+                v
+            } else {
+                panic!("Fail to parse rdb file response");
+            }
         };
+        println!("Rdb file: {} bytes", rdb_file.len());
 
         println!("Finished handshaking!");
         let replica = Arc::new(Self {
@@ -267,7 +279,7 @@ impl Replica {
                         assert_eq!(values.len(), 2);
                         let key = string_from(1)?;
                         match store.get(&key) {
-                            None => write_frame(stream, OwnedFrame::Null)?,
+                            None => write_null_bulk_string(stream)?,
                             Some(value) => {
                                 write_frame(stream, OwnedFrame::BulkString(value.into()))?
                             }
