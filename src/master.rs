@@ -37,6 +37,12 @@ fn to_bulk_string_array(strs: Vec<String>) -> OwnedFrame {
 fn write_bulk_string_array(stream: &mut TcpStream, strs: Vec<String>) -> Result<()> {
     write_frame(stream, to_bulk_string_array(strs))
 }
+
+fn write_null_bulk_string(stream: &mut TcpStream) -> Result<()> {
+    let buf = "$-1\r\n".as_bytes();
+    stream.write_all(&buf)?;
+    Ok(())
+}
 impl Master {
     pub fn new() -> Result<Self> {
         let master = Self {
@@ -105,7 +111,7 @@ impl Master {
                         assert_eq!(values.len(), 2);
                         let key = string_from(1)?;
                         match store.get(&key) {
-                            None => write_frame(stream, OwnedFrame::Null)?,
+                            None => write_null_bulk_string(stream)?,
                             Some(value) => {
                                 write_frame(stream, OwnedFrame::BulkString(value.into()))?
                             }

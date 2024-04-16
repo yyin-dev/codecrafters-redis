@@ -144,23 +144,26 @@ impl Replica {
         let fullresync_resp = receive_string(&mut master_stream)?.unwrap();
         let master_replication_id = fullresync_resp.split_ascii_whitespace().nth(1).unwrap();
         println!("Master replication id: {}", master_replication_id);
-        let rdb_file = {
-            // Format: $<length_of_file>\r\n<contents_of_file>
-            // Like bulk string, but without trailing \r\n
-            // Convert to bulk string and parse
-            let mut rdb_file_resp = receive_raw(&mut master_stream)?;
+        // Format: $<length_of_file>\r\n<contents_of_file>
+        // Like bulk string, but without trailing \r\n
+        // Convert to bulk string and parse
+        let mut rdb_file_resp = receive_raw(&mut master_stream)?;
+        if rdb_file_resp.len() == 0 {
+            println!("Received an empty rdb file transfer");
+        } else {
+            println!("Received a non-empty rdb file transfer");
+
             rdb_file_resp.push('\r' as u8);
             rdb_file_resp.push('\n' as u8);
             let (as_bulk_string, num_bytes) = decode(&rdb_file_resp)?.unwrap();
             assert_eq!(num_bytes, rdb_file_resp.len());
 
             if let OwnedFrame::BulkString(v) = as_bulk_string {
-                v
+                println!("Rdb file: {} bytes", v.len());
             } else {
                 panic!("Fail to parse rdb file response");
             }
-        };
-        println!("Rdb file: {} bytes", rdb_file.len());
+        }
 
         println!("Finished handshaking!");
         let replica = Arc::new(Self {
