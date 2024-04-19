@@ -1,3 +1,4 @@
+pub mod data;
 mod master;
 mod message;
 mod mode;
