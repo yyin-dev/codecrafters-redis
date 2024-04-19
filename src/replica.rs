@@ -96,6 +96,7 @@ fn receive(stream: &mut TcpStream) -> Result<Option<OwnedFrame>> {
         None => Ok(None),
         Some((frame, n)) => {
             assert!(n > 0);
+            assert_eq!(num_bytes, n);
             Ok(Some(frame))
         }
     }
@@ -364,7 +365,7 @@ impl Replica {
                         }
                         info_type => panic!("unknown info type: {}", info_type),
                     },
-                    command => panic!("unknown command: {}", command),
+                    command => println!("unknown command: {}", command),
                 }
             }
 
