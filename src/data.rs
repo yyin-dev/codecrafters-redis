@@ -1,5 +1,6 @@
 use anyhow::bail;
 use anyhow::Result;
+use core::fmt;
 use thiserror::Error;
 
 const NULL_BULK_STRING: &str = "$-1\r\n";
@@ -266,11 +267,38 @@ impl Data {
         }
     }
 
-    pub fn to_string(&self) -> Option<String> {
+    // Returns Some if it's a simple string or a bulk string. None otherwise
+    pub fn get_string(&self) -> Option<String> {
         match self {
             Data::SimpleString(s) | Data::BulkString(s) => String::from_utf8(s.to_vec()).ok(),
             _ => None,
         }
+    }
+
+    fn to_string(&self) -> String {
+        match self {
+            Data::SimpleString(s) => {
+                format!("SimpleString('{}')", String::from_utf8(s.clone()).unwrap())
+            }
+            Data::BulkString(s) => {
+                format!("BulkString('{}')", String::from_utf8(s.clone()).unwrap())
+            }
+            Data::NullBulkString => "NullBulkString".into(),
+            Data::Array(vs) => format!(
+                "Array[{}]",
+                vs.iter()
+                    .map(|v| v.to_string())
+                    .collect::<Vec<String>>()
+                    .join(", ")
+            ),
+            Data::Unknown(_) => "Unknown".into(),
+        }
+    }
+}
+
+impl fmt::Display for Data {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", self.to_string())
     }
 }
 

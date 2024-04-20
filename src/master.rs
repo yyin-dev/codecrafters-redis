@@ -55,13 +55,12 @@ impl Master {
 
     // Return true if this connection is from a replica (b/c we just completed a handshake)
     fn handle_data(&self, conn: &mut Connection, data: Data) -> Result<bool> {
+        println!("Recv: {}", data);
         match data {
             Data::Array(vs) => {
-                println!("Bulk: {:?}", vs);
-
                 let string_from = |idx| -> Result<String> {
                     let data: &Data = vs.get(idx).unwrap();
-                    match data.to_string() {
+                    match data.get_string() {
                         None => Err(anyhow!("to_string failed")),
                         Some(s) => Ok(s),
                     }

@@ -79,14 +79,13 @@ impl Replica {
             let res = conn.read_data();
 
             if let Ok(data) = res {
+                println!("Replication : {}", data);
                 let cmd_len = data.num_bytes();
                 match data {
                     Data::Array(vs) => {
-                        println!("Recv replication: {:?}", vs);
-
                         let string_from = |idx| -> Result<String> {
                             let data: &Data = vs.get(idx).unwrap();
-                            match data.to_string() {
+                            match data.get_string() {
                                 None => Err(anyhow!("to_string failed")),
                                 Some(s) => Ok(s),
                             }
@@ -132,7 +131,7 @@ impl Replica {
                         *offset += cmd_len;
                         println!("Replication offset: {}", offset);
                     }
-                    _ => panic!("Unknown replicaiton cmd: {:?}", data),
+                    _ => panic!("Unknown replicaiton cmd: {}", data),
                 }
             } else {
                 break;
@@ -162,13 +161,12 @@ impl Replica {
     }
 
     fn handle_data(&self, conn: &mut Connection, data: Data) -> Result<()> {
+        println!("Recv: {}", data);
         match data {
             Data::Array(vs) => {
-                println!("Recv: {:?}", vs);
-
                 let string_from = |idx| -> Result<String> {
                     let data: &Data = vs.get(idx).unwrap();
-                    match data.to_string() {
+                    match data.get_string() {
                         None => Err(anyhow!("to_string failed")),
                         Some(s) => Ok(s),
                     }
@@ -231,7 +229,7 @@ impl Replica {
                     command => println!("unknown command: {}", command),
                 }
             }
-            _ => panic!("Unknown: {:?}", data),
+            _ => panic!("Unknown: {}", data),
         };
 
         Ok(())
