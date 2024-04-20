@@ -10,20 +10,27 @@ use std::{
     time::Duration,
 };
 
-pub struct Master {
+pub struct MasterInner {
     replication_id: String,
     replication_offset: usize,
-    store: Arc<Mutex<Store>>,
-    replicas: Arc<Mutex<Vec<Connection>>>,
+    store: Store,
+    replicas: Vec<Connection>,
+}
+
+pub struct Master {
+    inner: Arc<Mutex<MasterInner>>,
 }
 
 impl Master {
     pub fn new() -> Result<Self> {
-        let master = Self {
+        let inner = MasterInner {
             replication_id: "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb".into(),
             replication_offset: 0,
-            store: Arc::new(Mutex::new(Store::new())),
-            replicas: Arc::new(Mutex::new(Vec::new())),
+            store: Store::new(),
+            replicas: Vec::new(),
+        };
+        let master = Self {
+            inner: Arc::new(Mutex::new(inner)),
         };
 
         Ok(master)
@@ -43,7 +50,7 @@ impl Master {
                 Ok(data) => {
                     let is_replica = self.handle_data(&mut conn, data)?;
                     if is_replica {
-                        self.replicas.lock().unwrap().push(conn);
+                        self.inner.lock().unwrap().replicas.push(conn);
                         break;
                     }
                 }
@@ -74,17 +81,17 @@ impl Master {
                         conn.write_data(Data::BulkString(string.into()))?
                     }
                     "get" => {
-                        let store = self.store.lock().unwrap();
+                        let inner = self.inner.lock().unwrap();
 
                         assert_eq!(vs.len(), 2);
                         let key = string_from(1)?;
-                        match store.get(&key) {
+                        match inner.store.get(&key) {
                             None => conn.write_data(Data::NullBulkString)?,
                             Some(value) => conn.write_data(Data::BulkString(value.into()))?,
                         }
                     }
                     "set" => {
-                        let store = self.store.lock().unwrap();
+                        let mut inner = self.inner.lock().unwrap();
 
                         assert!(vs.len() == 3 || vs.len() == 5);
                         let key = string_from(1)?;
@@ -99,22 +106,23 @@ impl Master {
                             None
                         };
 
-                        store.set(key, value, expire_in);
+                        inner.store.set(key, value, expire_in);
                         conn.write_data(Data::SimpleString("OK".into()))?;
 
                         // Replications
-                        let mut replicas = self.replicas.lock().unwrap();
-                        replicas
+                        inner
+                            .replicas
                             .iter_mut()
                             .map(|replica_conn| replica_conn.write_data(Data::Array(vs.clone())))
                             .collect::<Result<Vec<()>>>()?;
                     }
                     "info" => match string_from(1)?.to_ascii_lowercase().as_str() {
                         "replication" => {
+                            let inner = self.inner.lock().unwrap();
                             let role = String::from("role:master");
-                            let replication_id = format!("master_replid:{}", self.replication_id);
+                            let replication_id = format!("master_replid:{}", inner.replication_id);
                             let replication_offset =
-                                format!("master_repl_offset:{}", self.replication_offset);
+                                format!("master_repl_offset:{}", inner.replication_offset);
 
                             conn.write_data(Data::BulkString(
                                 vec![role, replication_id, replication_offset]
@@ -132,7 +140,11 @@ impl Master {
                         if slave_replication_id == "?" {
                             assert_eq!(slave_replication_offset, -1);
                             conn.write_data(Data::SimpleString(
-                                format!("FULLRESYNC {} 0", self.replication_id).into(),
+                                format!(
+                                    "FULLRESYNC {} 0",
+                                    self.inner.lock().unwrap().replication_id
+                                )
+                                .into(),
                             ))?;
 
                             // Send RDB file. Assume empty for this challenge
@@ -149,8 +161,18 @@ impl Master {
                         }
                     }
                     "wait" => {
-                        if self.replicas.lock().unwrap().len() == 0 {
-                            conn.write_data(Data::Integer(0))?
+                        assert_eq!(vs.len(), 3);
+
+                        let inner = self.inner.lock().unwrap();
+
+                        let num_replicas = inner.replicas.len();
+                        let num_replicas_to_wait = string_from(1)?.parse::<usize>()?;
+
+                        if num_replicas == 0
+                            || num_replicas_to_wait == 0
+                            || inner.replication_offset == 0
+                        {
+                            conn.write_data(Data::Integer(num_replicas as i64))?
                         }
                     }
                     command => panic!("unknown command: {}", command),
