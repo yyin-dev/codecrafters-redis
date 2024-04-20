@@ -6,6 +6,7 @@ use thiserror::Error;
 const NULL_BULK_STRING: &str = "$-1\r\n";
 const SIMPLE_STRING_DATA_TYPE: char = '+';
 const BULK_STRING_DATA_TYPE: char = '$';
+const INTEGER_DATA_TYPE: char = ':';
 const ARRAY_DATA_TYPE: char = '*';
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -13,6 +14,7 @@ pub enum Data {
     SimpleString(Vec<u8>),
     BulkString(Vec<u8>),
     NullBulkString,
+    Integer(i64),
     Array(Vec<Data>),
     Unknown(Vec<u8>),
 }
@@ -43,6 +45,14 @@ fn encode_null_bulk_string() -> Vec<u8> {
     NULL_BULK_STRING.into()
 }
 
+fn encode_integer(i: i64) -> Vec<u8> {
+    let mut res = Vec::new();
+    res.push(':' as u8);
+    res.append(&mut i.to_string().as_bytes().to_vec());
+    append_crlf(&mut res);
+    res
+}
+
 fn encode_array(vs: Vec<Data>) -> Vec<u8> {
     // *<number-of-elements>\r\n<element-1>...<element-n>
     let mut res = Vec::new();
@@ -69,7 +79,7 @@ pub enum DecodeError {
     CannotDecodeNumber,
 }
 
-fn decode_number(buf: &[u8]) -> Result<(usize, usize)> {
+fn decode_unsigned_int(buf: &[u8]) -> Result<(usize, usize)> {
     let mut num_str = String::new();
 
     for byte in buf {
@@ -80,17 +90,31 @@ fn decode_number(buf: &[u8]) -> Result<(usize, usize)> {
         }
     }
 
-    // Expect more non-numeric bytes, at least for bulk string and arrays
-    if num_str.len() == buf.len() {
-        bail!(DecodeError::NeedMoreBytes)
-    };
-
     match num_str.is_empty() {
         true => bail!(DecodeError::CannotDecodeNumber),
         false => {
             let num_bytes = num_str.len();
             Ok(num_str.parse::<usize>().map(|v| (v, num_bytes))?)
         }
+    }
+}
+
+fn decode_signed_int(buf: &[u8]) -> Result<(i64, usize)> {
+    let mut curr = 0;
+    if buf[0].is_ascii_digit() || buf[0] == b'-' || buf[0] == b'+' {
+        if buf[0] == b'-' || buf[1] == b'+' {
+            curr = 1;
+        }
+
+        let (_, len) = decode_unsigned_int(&buf[curr..])?;
+        let total_bytes = curr + len;
+
+        Ok((
+            String::from_utf8(buf[..total_bytes].to_vec())?.parse::<i64>()?,
+            total_bytes,
+        ))
+    } else {
+        bail!(DecodeError::CannotDecodeNumber)
     }
 }
 
@@ -114,7 +138,7 @@ fn decode_bulk_string(buf: &[u8]) -> Result<(Data, usize)> {
     } else {
         let mut curr = 1;
 
-        let (length, num_bytes_consumed) = decode_number(&buf[curr..])?;
+        let (length, num_bytes_consumed) = decode_unsigned_int(&buf[curr..])?;
         curr += num_bytes_consumed;
 
         // Check \r\n
@@ -169,6 +193,28 @@ fn decode_simple_string(buf: &[u8]) -> Result<(Data, usize)> {
     Ok((Data::SimpleString(buf[1..curr].into()), curr + 2))
 }
 
+fn decode_integer(buf: &[u8]) -> Result<(Data, usize)> {
+    // Shortest integer: :0\r\n
+    if buf.len() < 4 {
+        bail!(DecodeError::NeedMoreBytes)
+    }
+
+    assert_eq!(buf[0] as char, INTEGER_DATA_TYPE);
+
+    let mut curr = 1;
+    let (i, num_bytes) = decode_signed_int(&buf[curr..])?;
+    curr += num_bytes;
+
+    //\r\n
+    if buf.len() < curr + 2 {
+        bail!(DecodeError::NeedMoreBytes)
+    }
+    assert_eq!(buf[curr] as char, '\r');
+    assert_eq!(buf[curr + 1] as char, '\n');
+
+    Ok((Data::Integer(i), curr + 2))
+}
+
 fn decode_array(buf: &[u8]) -> Result<(Data, usize)> {
     // Shortest array: *0\r\n. 4 bytes
     if buf.len() < 4 {
@@ -179,7 +225,7 @@ fn decode_array(buf: &[u8]) -> Result<(Data, usize)> {
 
     let mut curr = 1;
 
-    let (length, num_bytes) = decode_number(&buf[curr..]).unwrap();
+    let (length, num_bytes) = decode_unsigned_int(&buf[curr..]).unwrap();
     curr += num_bytes;
 
     // \r\n
@@ -211,7 +257,7 @@ pub fn decode_rdb_file(buf: &[u8]) -> Result<(Vec<u8>, usize)> {
 
     // length
     let mut curr = 1;
-    let (length, num_bytes) = decode_number(&buf[curr..])?;
+    let (length, num_bytes) = decode_unsigned_int(&buf[curr..])?;
     curr += num_bytes;
 
     // \r\n
@@ -237,6 +283,7 @@ impl Data {
             Data::SimpleString(s) => encode_simple_string(s.clone()),
             Data::BulkString(s) => encode_bulk_string(s.clone()),
             Data::NullBulkString => encode_null_bulk_string(),
+            Data::Integer(i) => encode_integer(*i),
             Data::Array(arr) => encode_array(arr.to_vec()),
             Data::Unknown(_) => panic!("encode Unknown?"),
         }
@@ -250,6 +297,7 @@ impl Data {
         match buf[0] as char {
             SIMPLE_STRING_DATA_TYPE => decode_simple_string(buf),
             BULK_STRING_DATA_TYPE => decode_bulk_string(buf),
+            INTEGER_DATA_TYPE => decode_integer(buf),
             ARRAY_DATA_TYPE => decode_array(buf),
             c => Err(anyhow::anyhow!("Unrecognized data type: {}", c)),
         }
@@ -264,6 +312,7 @@ impl Data {
                 1 + vs.len().to_string().len() + 2 + vs.iter().map(|v| v.num_bytes()).sum::<usize>()
             }
             Data::Unknown(_) => usize::MAX,
+            Data::Integer(i) => 1 + i.to_string().len() + 2,
         }
     }
 
@@ -292,6 +341,7 @@ impl Data {
                     .join(", ")
             ),
             Data::Unknown(_) => "Unknown".into(),
+            Data::Integer(_) => todo!(),
         }
     }
 }
@@ -347,6 +397,15 @@ mod tests {
             Data::BulkString("abc".into()),
             Data::Array(vec![Data::SimpleString("abcd".into())]),
         ]));
+    }
+
+    #[test]
+    fn integer() {
+        roundtrip(Data::Integer(0));
+        roundtrip(Data::Integer(1));
+        roundtrip(Data::Integer(-1));
+        roundtrip(Data::Integer(42));
+        roundtrip(Data::Integer(-42));
     }
 
     #[test]

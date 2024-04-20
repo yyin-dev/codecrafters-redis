@@ -148,6 +148,11 @@ impl Master {
                             todo!()
                         }
                     }
+                    "wait" => {
+                        if self.replicas.lock().unwrap().len() == 0 {
+                            conn.write_data(Data::Integer(0))?
+                        }
+                    }
                     command => panic!("unknown command: {}", command),
                 }
             }
