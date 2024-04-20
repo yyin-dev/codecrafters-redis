@@ -1,6 +1,6 @@
-use std::{io::Write, net::TcpStream};
-
+use anyhow::bail;
 use anyhow::Result;
+use thiserror::Error;
 
 const NULL_BULK_STRING: &str = "$-1\r\n";
 const SIMPLE_STRING_DATA_TYPE: char = '+';
@@ -54,7 +54,15 @@ fn encode_array(vs: Vec<Data>) -> Vec<u8> {
     res
 }
 
-fn decode_number(buf: &[u8]) -> Option<(usize, usize)> {
+#[derive(Debug, Error)]
+pub enum DecodeError {
+    #[error("need more bytes")]
+    NeedMoreBytes,
+    #[error("cannot decode number")]
+    CannotDecodeNumber,
+}
+
+fn decode_number(buf: &[u8]) -> Result<(usize, usize)> {
     let mut num_str = String::new();
 
     for byte in buf {
@@ -65,40 +73,63 @@ fn decode_number(buf: &[u8]) -> Option<(usize, usize)> {
         }
     }
 
+    // Expect more non-numeric bytes, at least for bulk string and arrays
+    if num_str.len() == buf.len() {
+        bail!(DecodeError::NeedMoreBytes)
+    };
+
     match num_str.is_empty() {
-        true => None,
+        true => bail!(DecodeError::CannotDecodeNumber),
         false => {
             let num_bytes = num_str.len();
-            num_str.parse::<usize>().ok().map(|v| (v, num_bytes))
+            Ok(num_str.parse::<usize>().map(|v| (v, num_bytes))?)
         }
     }
 }
 
 fn decode_bulk_string(buf: &[u8]) -> Result<(Data, usize)> {
+    // Shortest bulk string: $0\r\n. 4 bytes
+    if buf.len() < 4 {
+        bail!(DecodeError::NeedMoreBytes)
+    }
+
     assert_eq!(buf[0] as char, BULK_STRING_DATA_TYPE);
 
     // Parse length, handling null bulk string
     if buf[1] as char == '-' {
+        if buf.len() < 5 {
+            bail!(DecodeError::NeedMoreBytes)
+        }
+
         // null bulk string
         assert_eq!(&buf[..5], NULL_BULK_STRING.as_bytes());
         Ok((Data::NullBulkString, 5))
     } else {
         let mut curr = 1;
 
-        let (length, num_bytes_consumed) = decode_number(&buf[curr..]).unwrap();
+        let (length, num_bytes_consumed) = decode_number(&buf[curr..])?;
         curr += num_bytes_consumed;
 
         // Check \r\n
+        if buf.len() < curr + 2 {
+            bail!(DecodeError::NeedMoreBytes)
+        }
         assert_eq!(buf[curr] as char, '\r');
         curr += 1;
         assert_eq!(buf[curr] as char, '\n');
         curr += 1;
 
         // Extract data
+        if buf.len() < curr + length {
+            bail!(DecodeError::NeedMoreBytes)
+        }
         let s = &buf[curr..curr + length];
+        curr += length;
 
         // Check \r\n
-        curr += length;
+        if buf.len() < curr + 2 {
+            bail!(DecodeError::NeedMoreBytes)
+        }
         assert_eq!(buf[curr] as char, '\r');
         curr += 1;
         assert_eq!(buf[curr] as char, '\n');
@@ -109,20 +140,34 @@ fn decode_bulk_string(buf: &[u8]) -> Result<(Data, usize)> {
 }
 
 fn decode_simple_string(buf: &[u8]) -> Result<(Data, usize)> {
-    assert_eq!(buf[0] as char, SIMPLE_STRING_DATA_TYPE);
-
-    let mut end = 1;
-    while end < buf.len() && !char::is_whitespace(buf[end] as char) {
-        end += 1;
+    // Shortest simple string: +\r\n. 3 bytes
+    if buf.len() < 3 {
+        bail!(DecodeError::NeedMoreBytes)
     }
 
-    assert_eq!(buf[end] as char, '\r');
-    assert_eq!(buf[end + 1] as char, '\n');
+    assert_eq!(buf[0] as char, SIMPLE_STRING_DATA_TYPE);
 
-    Ok((Data::SimpleString(buf[1..end].into()), end + 2))
+    let mut curr = 1;
+    while curr < buf.len() && !char::is_whitespace(buf[curr] as char) {
+        curr += 1;
+    }
+
+    //\r\n
+    if buf.len() < curr + 2 {
+        bail!(DecodeError::NeedMoreBytes)
+    }
+    assert_eq!(buf[curr] as char, '\r');
+    assert_eq!(buf[curr + 1] as char, '\n');
+
+    Ok((Data::SimpleString(buf[1..curr].into()), curr + 2))
 }
 
 fn decode_array(buf: &[u8]) -> Result<(Data, usize)> {
+    // Shortest array: *0\r\n. 4 bytes
+    if buf.len() < 4 {
+        bail!(DecodeError::NeedMoreBytes)
+    }
+
     assert_eq!(buf[0] as char, ARRAY_DATA_TYPE);
 
     let mut curr = 1;
@@ -131,6 +176,9 @@ fn decode_array(buf: &[u8]) -> Result<(Data, usize)> {
     curr += num_bytes;
 
     // \r\n
+    if buf.len() < curr + 2 {
+        bail!(DecodeError::NeedMoreBytes)
+    }
     assert_eq!(buf[curr] as char, '\r');
     curr += 1;
     assert_eq!(buf[curr] as char, '\n');
@@ -158,6 +206,10 @@ impl Data {
     }
 
     pub fn decode(buf: &[u8]) -> Result<(Self, usize)> {
+        if buf.len() == 0 {
+            bail!(DecodeError::NeedMoreBytes)
+        }
+
         match buf[0] as char {
             SIMPLE_STRING_DATA_TYPE => decode_simple_string(buf),
             BULK_STRING_DATA_TYPE => decode_bulk_string(buf),
@@ -210,5 +262,34 @@ mod tests {
             Data::BulkString("abc".into()),
             Data::Array(vec![Data::SimpleString("abcd".into())]),
         ]));
+    }
+
+    #[test]
+    fn decode_simple_string_error() {
+        assert!(Data::decode("+\r".as_bytes()).is_err());
+        assert!(Data::decode("+\n".as_bytes()).is_err());
+    }
+
+    #[test]
+    fn decode_bulk_string_error() {
+        assert!(Data::decode("$".as_bytes()).is_err());
+        assert!(Data::decode("$2".as_bytes()).is_err());
+        assert!(Data::decode("$2\r".as_bytes()).is_err());
+        assert!(Data::decode("$2\r\n".as_bytes()).is_err());
+        assert!(Data::decode("$2\r\n\r".as_bytes()).is_err());
+        assert!(Data::decode("$2\r\n\r\n".as_bytes()).is_err());
+        assert!(Data::decode("$2\r\na\r\n".as_bytes()).is_err());
+    }
+
+    #[test]
+    fn decode_array_error() {
+        assert!(Data::decode("*0".as_bytes()).is_err());
+        assert!(Data::decode("*0\r".as_bytes()).is_err());
+        assert!(Data::decode("*1\r\n".as_bytes()).is_err());
+        assert!(Data::decode("*1\r\n$".as_bytes()).is_err());
+        assert!(Data::decode("*1\r\n+".as_bytes()).is_err());
+        assert!(Data::decode("*1\r\n+OK".as_bytes()).is_err());
+        assert!(Data::decode("*1\r\n+OK\r".as_bytes()).is_err());
+        assert!(Data::decode("*2\r\n+OK\r\n".as_bytes()).is_err());
     }
 }
