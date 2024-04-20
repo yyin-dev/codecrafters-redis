@@ -1,4 +1,11 @@
+use std::{io::Write, net::TcpStream};
+
 use anyhow::Result;
+
+const NULL_BULK_STRING: &str = "$-1\r\n";
+const SIMPLE_STRING_DATA_TYPE: char = '+';
+const BULK_STRING_DATA_TYPE: char = '$';
+const ARRAY_DATA_TYPE: char = '*';
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Data {
@@ -9,15 +16,13 @@ pub enum Data {
     Unknown(Vec<u8>),
 }
 
-const NULL_BULK_STRING: &str = "$-1\r\n";
-
 fn append_crlf(s: &mut Vec<u8>) {
     s.append(&mut vec!['\r' as u8, '\n' as u8])
 }
 
 fn encode_simple_string(mut s: Vec<u8>) -> Vec<u8> {
     // +<data>\r\n
-    s.insert(0, '+' as u8);
+    s.insert(0, SIMPLE_STRING_DATA_TYPE as u8);
     append_crlf(&mut s);
     s
 }
@@ -25,7 +30,7 @@ fn encode_simple_string(mut s: Vec<u8>) -> Vec<u8> {
 fn encode_bulk_string(mut s: Vec<u8>) -> Vec<u8> {
     // $<length>\r\n<data>\r\n
     let mut res = Vec::new();
-    res.append(&mut vec!['$' as u8]);
+    res.append(&mut vec![BULK_STRING_DATA_TYPE as u8]);
     res.append(&mut s.len().to_string().as_bytes().to_vec());
     append_crlf(&mut res);
     res.append(&mut s);
@@ -40,7 +45,7 @@ fn encode_null_bulk_string() -> Vec<u8> {
 fn encode_array(vs: Vec<Data>) -> Vec<u8> {
     // *<number-of-elements>\r\n<element-1>...<element-n>
     let mut res = Vec::new();
-    res.append(&mut vec!['*' as u8]);
+    res.append(&mut vec![ARRAY_DATA_TYPE as u8]);
     res.append(&mut vs.len().to_string().as_bytes().to_vec());
     append_crlf(&mut res);
     for v in vs {
@@ -70,7 +75,7 @@ fn decode_number(buf: &[u8]) -> Option<(usize, usize)> {
 }
 
 fn decode_bulk_string(buf: &[u8]) -> Result<(Data, usize)> {
-    assert_eq!(buf[0] as char, '$');
+    assert_eq!(buf[0] as char, BULK_STRING_DATA_TYPE);
 
     // Parse length, handling null bulk string
     if buf[1] as char == '-' {
@@ -104,7 +109,7 @@ fn decode_bulk_string(buf: &[u8]) -> Result<(Data, usize)> {
 }
 
 fn decode_simple_string(buf: &[u8]) -> Result<(Data, usize)> {
-    assert_eq!(buf[0] as char, '+');
+    assert_eq!(buf[0] as char, SIMPLE_STRING_DATA_TYPE);
 
     let mut end = 1;
     while end < buf.len() && !char::is_whitespace(buf[end] as char) {
@@ -118,7 +123,7 @@ fn decode_simple_string(buf: &[u8]) -> Result<(Data, usize)> {
 }
 
 fn decode_array(buf: &[u8]) -> Result<(Data, usize)> {
-    assert_eq!(buf[0] as char, '*');
+    assert_eq!(buf[0] as char, ARRAY_DATA_TYPE);
 
     let mut curr = 1;
 
@@ -154,9 +159,9 @@ impl Data {
 
     pub fn decode(buf: &[u8]) -> Result<(Self, usize)> {
         match buf[0] as char {
-            '+' => decode_simple_string(buf),
-            '$' => decode_bulk_string(buf),
-            '*' => decode_array(buf),
+            SIMPLE_STRING_DATA_TYPE => decode_simple_string(buf),
+            BULK_STRING_DATA_TYPE => decode_bulk_string(buf),
+            ARRAY_DATA_TYPE => decode_array(buf),
             c => Err(anyhow::anyhow!("Unrecognized data type: {}", c)),
         }
     }
