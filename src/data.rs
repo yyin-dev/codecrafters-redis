@@ -148,7 +148,7 @@ fn decode_simple_string(buf: &[u8]) -> Result<(Data, usize)> {
     assert_eq!(buf[0] as char, SIMPLE_STRING_DATA_TYPE);
 
     let mut curr = 1;
-    while curr < buf.len() && !char::is_whitespace(buf[curr] as char) {
+    while curr < buf.len() && (buf[curr] as char != '\r') {
         curr += 1;
     }
 
@@ -194,6 +194,36 @@ fn decode_array(buf: &[u8]) -> Result<(Data, usize)> {
     Ok((Data::Array(values), curr))
 }
 
+pub fn decode_rdb_file(buf: &[u8]) -> Result<(Vec<u8>, usize)> {
+    if buf.len() < 4 {
+        bail!(DecodeError::NeedMoreBytes)
+    }
+
+    // Format: $<length_of_file>\r\n<contents_of_file>
+    assert_eq!(buf[0] as char, '$');
+
+    // length
+    let mut curr = 1;
+    let (length, num_bytes) = decode_number(&buf[curr..])?;
+    curr += num_bytes;
+
+    // \r\n
+    if buf.len() < curr + 2 {
+        bail!(DecodeError::NeedMoreBytes)
+    }
+    assert_eq!(buf[curr] as char, '\r');
+    curr += 1;
+    assert_eq!(buf[curr] as char, '\n');
+    curr += 1;
+
+    // data
+    if buf.len() < curr + length {
+        bail!(DecodeError::NeedMoreBytes)
+    }
+
+    Ok((buf[curr..curr + length].into(), curr + length))
+}
+
 impl Data {
     pub fn encode(&self) -> Vec<u8> {
         match self {
@@ -217,6 +247,13 @@ impl Data {
             c => Err(anyhow::anyhow!("Unrecognized data type: {}", c)),
         }
     }
+
+    pub fn to_string(&self) -> Option<String> {
+        match self {
+            Data::SimpleString(s) | Data::BulkString(s) => String::from_utf8(s.to_vec()).ok(),
+            _ => None,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -234,6 +271,7 @@ mod tests {
     fn simple_string() {
         roundtrip(Data::SimpleString("".into()));
         roundtrip(Data::SimpleString("abc".into()));
+        roundtrip(Data::SimpleString("abc d".into()));
     }
 
     #[test]
@@ -262,6 +300,12 @@ mod tests {
             Data::BulkString("abc".into()),
             Data::Array(vec![Data::SimpleString("abcd".into())]),
         ]));
+    }
+
+    #[test]
+    fn rdb_file() {
+        assert!(decode_rdb_file("$2\r\nx".as_bytes()).is_err());
+        assert!(decode_rdb_file("$2\r\nxy".as_bytes()).is_ok());
     }
 
     #[test]

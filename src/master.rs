@@ -86,11 +86,11 @@ impl Master {
         let mut is_replica = false;
 
         match value {
-            redis::Value::Nil => todo!(),
-            redis::Value::Int(_) => todo!(),
-            redis::Value::Data(_) => todo!(),
-            redis::Value::Status(_) => todo!(),
-            redis::Value::Okay => todo!(),
+            // redis::Value::Nil => todo!(),
+            // redis::Value::Int(_) => todo!(),
+            // redis::Value::Data(_) => todo!(),
+            // redis::Value::Status(_) => todo!(),
+            // redis::Value::Okay => todo!(),
             redis::Value::Bulk(values) => {
                 println!("Bulk: {:?}", values);
 
@@ -177,7 +177,7 @@ impl Master {
                             assert_eq!(slave_replication_offset, -1);
                             write_frame(
                                 stream,
-                                OwnedFrame::BulkString(
+                                OwnedFrame::SimpleString(
                                     format!("FULLRESYNC {} 0", self.replication_id).into(),
                                 ),
                             )?;
@@ -202,6 +202,7 @@ impl Master {
                     command => panic!("unknown command: {}", command),
                 }
             }
+            v => println!("Unkonwn: {:?}", v),
         };
 
         Ok(is_replica)
