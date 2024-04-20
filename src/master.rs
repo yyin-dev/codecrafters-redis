@@ -32,8 +32,7 @@ impl Master {
     pub fn handle_connection(&self, stream: TcpStream) -> Result<()> {
         let mut conn = Connection::new(stream);
 
-        let mut is_replica = false;
-        while !is_replica {
+        loop {
             let result = conn.read_data();
 
             match result {
@@ -42,14 +41,13 @@ impl Master {
                     break;
                 }
                 Ok(data) => {
-                    is_replica = self.handle_data(&mut conn, data)?;
+                    let is_replica = self.handle_data(&mut conn, data)?;
+                    if is_replica {
+                        self.replicas.lock().unwrap().push(conn);
+                        break;
+                    }
                 }
             }
-        }
-
-        if is_replica {
-            // TODO: Call handle_replica() to handle commands like ping, replconf, psync, etc.
-            self.replicas.lock().unwrap().push(conn);
         }
 
         Ok(())
@@ -57,8 +55,6 @@ impl Master {
 
     // Return true if this connection is from a replica (b/c we just completed a handshake)
     fn handle_data(&self, conn: &mut Connection, data: Data) -> Result<bool> {
-        let mut is_replica = false;
-
         match data {
             Data::Array(vs) => {
                 println!("Bulk: {:?}", vs);
@@ -148,7 +144,7 @@ impl Master {
                                 .decode(empty_rdb_base64)?;
                             conn.write(data::encode_rdb_file(empty_rdb))?;
 
-                            is_replica = true;
+                            return Ok(true);
                         } else {
                             todo!()
                         }
@@ -159,6 +155,6 @@ impl Master {
             v => println!("Unkonwn: {:?}", v),
         };
 
-        Ok(is_replica)
+        Ok(false)
     }
 }

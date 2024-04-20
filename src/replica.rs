@@ -91,8 +91,9 @@ impl Replica {
                             }
                         };
 
-                        match string_from(0)?.to_ascii_lowercase().as_str() {
-                            "set" => {
+                        match string_from(0)?.to_ascii_uppercase().as_str() {
+                            "PING" => println!("Received PING from master"),
+                            "SET" => {
                                 let store = self.store.lock().unwrap();
 
                                 assert!(vs.len() == 3 || vs.len() == 5);
@@ -109,6 +110,17 @@ impl Replica {
                                 };
 
                                 store.set(key, value, expire_in);
+                            }
+                            "REPLCONF" => {
+                                assert_eq!(vs.len(), 3);
+                                assert_eq!(string_from(1)?, "GETACK");
+                                assert_eq!(string_from(2)?, "*");
+
+                                conn.write_data(Data::Array(vec![
+                                    Data::BulkString("REPLCONF".into()),
+                                    Data::BulkString("ACK".into()),
+                                    Data::BulkString("0".into()),
+                                ]))?
                             }
                             command => panic!("unknown command: {}", command),
                         };

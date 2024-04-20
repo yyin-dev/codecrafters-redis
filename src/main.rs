@@ -1,7 +1,6 @@
 pub mod data;
 pub mod connection;
 mod master;
-mod message;
 mod mode;
 mod replica;
 mod store;

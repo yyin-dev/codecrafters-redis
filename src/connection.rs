@@ -25,7 +25,6 @@ impl Connection {
             Err(anyhow!("TcpStream closed"))
         } else {
             self.buffer.append(&mut buf[..num_bytes_read].to_vec());
-            println!("load_more: {}", num_bytes_read);
             Ok(())
         }
     }
