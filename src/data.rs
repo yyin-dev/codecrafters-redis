@@ -254,6 +254,18 @@ impl Data {
         }
     }
 
+    pub fn num_bytes(&self) -> usize {
+        match self {
+            Data::SimpleString(s) => 1 + s.len() + 2,
+            Data::BulkString(s) => 1 + s.len().to_string().len() + 2 + s.len() + 2,
+            Data::NullBulkString => 5,
+            Data::Array(vs) => {
+                1 + vs.len().to_string().len() + 2 + vs.iter().map(|v| v.num_bytes()).sum::<usize>()
+            }
+            Data::Unknown(_) => usize::MAX,
+        }
+    }
+
     pub fn to_string(&self) -> Option<String> {
         match self {
             Data::SimpleString(s) | Data::BulkString(s) => String::from_utf8(s.to_vec()).ok(),
@@ -268,6 +280,7 @@ mod tests {
 
     fn roundtrip(data: Data) {
         let encoded = data.encode();
+        assert_eq!(data.num_bytes(), encoded.len());
         let (decoded, num_bytes) = Data::decode(&encoded).unwrap();
         assert_eq!(num_bytes, encoded.len());
         assert_eq!(data, decoded);

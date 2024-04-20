@@ -11,7 +11,7 @@ use std::{
 
 pub struct Replica {
     master_replication_id: String,
-    replication_offset: usize,
+    replication_offset: Arc<Mutex<usize>>,
     store: Arc<Mutex<Store>>,
 }
 
@@ -63,7 +63,7 @@ impl Replica {
         println!("Finished handshaking!");
         let replica = Arc::new(Self {
             master_replication_id: master_replication_id.into(),
-            replication_offset: 0,
+            replication_offset: Arc::new(Mutex::new(0)),
             store: Arc::new(Mutex::new(Store::new())),
         });
 
@@ -79,6 +79,7 @@ impl Replica {
             let res = conn.read_data();
 
             if let Ok(data) = res {
+                let cmd_len = data.num_bytes();
                 match data {
                     Data::Array(vs) => {
                         println!("Recv replication: {:?}", vs);
@@ -119,11 +120,17 @@ impl Replica {
                                 conn.write_data(Data::Array(vec![
                                     Data::BulkString("REPLCONF".into()),
                                     Data::BulkString("ACK".into()),
-                                    Data::BulkString("0".into()),
+                                    Data::BulkString(
+                                        self.replication_offset.lock().unwrap().to_string().into(),
+                                    ),
                                 ]))?
                             }
                             command => panic!("unknown command: {}", command),
                         };
+
+                        let mut offset = self.replication_offset.lock().unwrap();
+                        *offset += cmd_len;
+                        println!("Replication offset: {}", offset);
                     }
                     _ => panic!("Unknown replicaiton cmd: {:?}", data),
                 }
@@ -208,8 +215,10 @@ impl Replica {
                             let role = String::from("role:slave");
                             let replication_id =
                                 format!("master_replid:{}", self.master_replication_id);
-                            let replication_offset =
-                                format!("master_repl_offset:{}", self.replication_offset);
+                            let replication_offset = format!(
+                                "master_repl_offset:{}",
+                                self.replication_offset.lock().unwrap()
+                            );
 
                             conn.write_data(Data::BulkString(
                                 vec![role, replication_id, replication_offset]
