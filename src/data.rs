@@ -54,6 +54,12 @@ fn encode_array(vs: Vec<Data>) -> Vec<u8> {
     res
 }
 
+pub fn encode_rdb_file(rdb: Vec<u8>) -> Vec<u8> {
+    let as_bulk_string = encode_bulk_string(rdb);
+    let len = as_bulk_string.len();
+    as_bulk_string[..(len - 2)].to_vec()
+}
+
 #[derive(Debug, Error)]
 pub enum DecodeError {
     #[error("need more bytes")]

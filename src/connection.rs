@@ -21,7 +21,8 @@ impl Connection {
         let mut buf = vec![0; 1024];
         let num_bytes_read = self.stream.read(&mut buf)?;
         if num_bytes_read == 0 {
-            Err(anyhow!("Stream closed"))
+            // TcpStream::read returning 0 means the connection is closed
+            Err(anyhow!("TcpStream closed"))
         } else {
             self.buffer.append(&mut buf[..num_bytes_read].to_vec());
             println!("load_more: {}", num_bytes_read);
@@ -70,5 +71,9 @@ impl Connection {
 
     pub fn write_data(&mut self, data: Data) -> Result<()> {
         Ok(self.stream.write_all(&data.encode())?)
+    }
+
+    pub fn write(&mut self, buf: Vec<u8>) -> Result<()> {
+        Ok(self.stream.write_all(&buf)?)
     }
 }
