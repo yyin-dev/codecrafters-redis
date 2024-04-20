@@ -10,11 +10,17 @@ use std::{
     time::Duration,
 };
 
+struct ReplicaHandle {
+    id: usize,
+    offset: usize,
+    conn: Connection,
+}
+
 pub struct MasterInner {
     replication_id: String,
     replication_offset: usize,
     store: Store,
-    replicas: Vec<Connection>,
+    replicas: Vec<Arc<Mutex<ReplicaHandle>>>,
 }
 
 pub struct Master {
@@ -50,7 +56,19 @@ impl Master {
                 Ok(data) => {
                     let is_replica = self.handle_data(&mut conn, data)?;
                     if is_replica {
-                        self.inner.lock().unwrap().replicas.push(conn);
+                        let mut inner = self.inner.lock().unwrap();
+
+                        let id = inner.replicas.len();
+                        let handle = ReplicaHandle {
+                            id,
+                            offset: 0,
+                            conn,
+                        };
+                        let handle = Arc::new(Mutex::new(handle));
+
+                        inner.replicas.push(handle.clone());
+                        self.handle_replica(handle)?;
+
                         break;
                     }
                 }
@@ -60,31 +78,31 @@ impl Master {
         Ok(())
     }
 
+    fn handle_replica(&self, handle: Arc<Mutex<ReplicaHandle>>) -> Result<()> {
+        Ok(())
+    }
+
     // Return true if this connection is from a replica (b/c we just completed a handshake)
     fn handle_data(&self, conn: &mut Connection, data: Data) -> Result<bool> {
         println!("Recv: {}", data);
         match data {
             Data::Array(vs) => {
-                let string_from = |idx| -> Result<String> {
-                    let data: &Data = vs.get(idx).unwrap();
-                    match data.get_string() {
-                        None => Err(anyhow!("to_string failed")),
-                        Some(s) => Ok(s),
-                    }
+                let string_at = |idx: usize| -> Result<String> {
+                    vs[idx].get_string().ok_or(anyhow!("fail to get string"))
                 };
 
-                match string_from(0)?.to_ascii_lowercase().as_str() {
+                match string_at(0)?.to_ascii_lowercase().as_str() {
                     "ping" => conn.write_data(Data::SimpleString("PONG".into()))?,
                     "echo" => {
                         assert_eq!(vs.len(), 2);
-                        let string = string_from(1)?;
+                        let string = string_at(1)?;
                         conn.write_data(Data::BulkString(string.into()))?
                     }
                     "get" => {
                         let inner = self.inner.lock().unwrap();
 
                         assert_eq!(vs.len(), 2);
-                        let key = string_from(1)?;
+                        let key = string_at(1)?;
                         match inner.store.get(&key) {
                             None => conn.write_data(Data::NullBulkString)?,
                             Some(value) => conn.write_data(Data::BulkString(value.into()))?,
@@ -94,13 +112,13 @@ impl Master {
                         let mut inner = self.inner.lock().unwrap();
 
                         assert!(vs.len() == 3 || vs.len() == 5);
-                        let key = string_from(1)?;
-                        let value = string_from(2)?;
+                        let key = string_at(1)?;
+                        let value = string_at(2)?;
 
                         let expire_in = if vs.len() == 5 {
-                            let px = string_from(3)?;
+                            let px = string_at(3)?;
                             assert_eq!(px.to_ascii_lowercase(), "px");
-                            let expire_in: u64 = string_from(4)?.parse()?;
+                            let expire_in: u64 = string_at(4)?.parse()?;
                             Some(Duration::from_millis(expire_in))
                         } else {
                             None
@@ -113,10 +131,16 @@ impl Master {
                         inner
                             .replicas
                             .iter_mut()
-                            .map(|replica_conn| replica_conn.write_data(Data::Array(vs.clone())))
+                            .map(|replica| {
+                                replica
+                                    .lock()
+                                    .unwrap()
+                                    .conn
+                                    .write_data(Data::Array(vs.clone()))
+                            })
                             .collect::<Result<Vec<()>>>()?;
                     }
-                    "info" => match string_from(1)?.to_ascii_lowercase().as_str() {
+                    "info" => match string_at(1)?.to_ascii_lowercase().as_str() {
                         "replication" => {
                             let inner = self.inner.lock().unwrap();
                             let role = String::from("role:master");
@@ -134,8 +158,8 @@ impl Master {
                     },
                     "replconf" => conn.write_data(Data::SimpleString("OK".into()))?,
                     "psync" => {
-                        let slave_replication_id = string_from(1)?;
-                        let slave_replication_offset: isize = string_from(2)?.parse()?;
+                        let slave_replication_id = string_at(1)?;
+                        let slave_replication_offset: isize = string_at(2)?.parse()?;
 
                         if slave_replication_id == "?" {
                             assert_eq!(slave_replication_offset, -1);
@@ -155,6 +179,7 @@ impl Master {
                                 .decode(empty_rdb_base64)?;
                             conn.write(data::encode_rdb_file(empty_rdb))?;
 
+                            println!("Finished handshaking with replica");
                             return Ok(true);
                         } else {
                             todo!()
@@ -166,7 +191,7 @@ impl Master {
                         let inner = self.inner.lock().unwrap();
 
                         let num_replicas = inner.replicas.len();
-                        let num_replicas_to_wait = string_from(1)?.parse::<usize>()?;
+                        let num_replicas_to_wait = string_at(1)?.parse::<usize>()?;
 
                         if num_replicas == 0
                             || num_replicas_to_wait == 0

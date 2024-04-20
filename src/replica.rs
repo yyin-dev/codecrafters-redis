@@ -19,7 +19,7 @@ impl Replica {
     pub fn new(master_sockaddr: SocketAddr, port: u16) -> Result<Arc<Self>> {
         // If it's a slave, handshake with master
         let master_stream = TcpStream::connect(master_sockaddr)?;
-        let mut conn = Connection::new(master_stream);
+        let conn = Connection::new(master_stream);
 
         // PING
         conn.write_data(Data::Array(vec![Data::BulkString("PING".into())]))?;
@@ -73,7 +73,7 @@ impl Replica {
         Ok(replica)
     }
 
-    fn handle_replication(&self, mut conn: Connection) -> Result<()> {
+    fn handle_replication(&self, conn: Connection) -> Result<()> {
         println!("Start handling replication cmds...");
         loop {
             let res = conn.read_data();
@@ -83,27 +83,23 @@ impl Replica {
                 let cmd_len = data.num_bytes();
                 match data {
                     Data::Array(vs) => {
-                        let string_from = |idx| -> Result<String> {
-                            let data: &Data = vs.get(idx).unwrap();
-                            match data.get_string() {
-                                None => Err(anyhow!("to_string failed")),
-                                Some(s) => Ok(s),
-                            }
+                        let string_at = |idx: usize| -> Result<String> {
+                            vs[idx].get_string().ok_or(anyhow!("fail to get string"))
                         };
 
-                        match string_from(0)?.to_ascii_uppercase().as_str() {
+                        match string_at(0)?.to_ascii_uppercase().as_str() {
                             "PING" => println!("Received PING from master"),
                             "SET" => {
                                 let store = self.store.lock().unwrap();
 
                                 assert!(vs.len() == 3 || vs.len() == 5);
-                                let key = string_from(1)?;
-                                let value = string_from(2)?;
+                                let key = string_at(1)?;
+                                let value = string_at(2)?;
 
                                 let expire_in = if vs.len() == 5 {
-                                    let px = string_from(3)?;
+                                    let px = string_at(3)?;
                                     assert_eq!(px.to_ascii_lowercase(), "px");
-                                    let expire_in: u64 = string_from(4)?.parse()?;
+                                    let expire_in: u64 = string_at(4)?.parse()?;
                                     Some(Duration::from_millis(expire_in))
                                 } else {
                                     None
@@ -113,8 +109,8 @@ impl Replica {
                             }
                             "REPLCONF" => {
                                 assert_eq!(vs.len(), 3);
-                                assert_eq!(string_from(1)?, "GETACK");
-                                assert_eq!(string_from(2)?, "*");
+                                assert_eq!(string_at(1)?, "GETACK");
+                                assert_eq!(string_at(2)?, "*");
 
                                 conn.write_data(Data::Array(vec![
                                     Data::BulkString("REPLCONF".into()),
@@ -164,26 +160,22 @@ impl Replica {
         println!("Recv: {}", data);
         match data {
             Data::Array(vs) => {
-                let string_from = |idx| -> Result<String> {
-                    let data: &Data = vs.get(idx).unwrap();
-                    match data.get_string() {
-                        None => Err(anyhow!("to_string failed")),
-                        Some(s) => Ok(s),
-                    }
+                let string_at = |idx: usize| -> Result<String> {
+                    vs[idx].get_string().ok_or(anyhow!("fail to get string"))
                 };
 
-                match string_from(0)?.to_ascii_lowercase().as_str() {
+                match string_at(0)?.to_ascii_lowercase().as_str() {
                     "ping" => conn.write_data(Data::SimpleString("PONG".into()))?,
                     "echo" => {
                         assert_eq!(vs.len(), 2);
-                        let string = string_from(1)?;
+                        let string = string_at(1)?;
                         conn.write_data(Data::BulkString(string.into()))?
                     }
                     "get" => {
                         let store = self.store.lock().unwrap();
 
                         assert_eq!(vs.len(), 2);
-                        let key = string_from(1)?;
+                        let key = string_at(1)?;
                         match store.get(&key) {
                             None => conn.write_data(Data::NullBulkString)?,
                             Some(value) => conn.write_data(Data::BulkString(value.into()))?,
@@ -193,13 +185,13 @@ impl Replica {
                         let store = self.store.lock().unwrap();
 
                         assert!(vs.len() == 3 || vs.len() == 5);
-                        let key = string_from(1)?;
-                        let value = string_from(2)?;
+                        let key = string_at(1)?;
+                        let value = string_at(2)?;
 
                         let expire_in = if vs.len() == 5 {
-                            let px = string_from(3)?;
+                            let px = string_at(3)?;
                             assert_eq!(px.to_ascii_lowercase(), "px");
-                            let expire_in: u64 = string_from(4)?.parse()?;
+                            let expire_in: u64 = string_at(4)?.parse()?;
                             Some(Duration::from_millis(expire_in))
                         } else {
                             None
@@ -208,7 +200,7 @@ impl Replica {
                         store.set(key, value, expire_in);
                         conn.write_data(Data::SimpleString("OK".into()))?
                     }
-                    "info" => match string_from(1)?.to_ascii_lowercase().as_str() {
+                    "info" => match string_at(1)?.to_ascii_lowercase().as_str() {
                         "replication" => {
                             let role = String::from("role:slave");
                             let replication_id =

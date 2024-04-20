@@ -2,15 +2,16 @@ use crate::data::DecodeError;
 use crate::data::{decode_rdb_file, Data};
 use anyhow::{anyhow, Result};
 use std::io::Write;
+use std::sync::{Arc, Mutex};
 use std::{io::Read, net::TcpStream};
 
-pub struct Connection {
+struct Buffer {
     stream: TcpStream,
     buffer: Vec<u8>,
 }
 
-impl Connection {
-    pub fn new(stream: TcpStream) -> Self {
+impl Buffer {
+    fn new(stream: TcpStream) -> Self {
         Self {
             stream,
             buffer: Vec::new(),
@@ -74,5 +75,33 @@ impl Connection {
 
     pub fn write(&mut self, buf: Vec<u8>) -> Result<()> {
         Ok(self.stream.write_all(&buf)?)
+    }
+}
+
+/// `Connection` is thread-safe
+pub struct Connection {
+    buffer: Arc<Mutex<Buffer>>,
+}
+
+impl Connection {
+    pub fn new(stream: TcpStream) -> Self {
+        let buffer = Arc::new(Mutex::new(Buffer::new(stream)));
+        Self { buffer }
+    }
+
+    pub fn read_data(&self) -> Result<Data> {
+        self.buffer.lock().unwrap().read_data()
+    }
+
+    pub fn read_rdb_file(&self) -> Result<Vec<u8>> {
+        self.buffer.lock().unwrap().read_rdb_file()
+    }
+
+    pub fn write_data(&self, data: Data) -> Result<()> {
+        self.buffer.lock().unwrap().write_data(data)
+    }
+
+    pub fn write(&self, buf: Vec<u8>) -> Result<()> {
+        self.buffer.lock().unwrap().write(buf)
     }
 }
