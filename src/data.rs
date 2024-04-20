@@ -1,5 +1,3 @@
-#![allow(unused_variables)]
-#![allow(dead_code)]
 use anyhow::Result;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -51,6 +49,26 @@ fn encode_array(vs: Vec<Data>) -> Vec<u8> {
     res
 }
 
+fn decode_number(buf: &[u8]) -> Option<(usize, usize)> {
+    let mut num_str = String::new();
+
+    for byte in buf {
+        if char::is_numeric(*byte as char) {
+            num_str.push(*byte as char);
+        } else {
+            break;
+        }
+    }
+
+    match num_str.is_empty() {
+        true => None,
+        false => {
+            let num_bytes = num_str.len();
+            num_str.parse::<usize>().ok().map(|v| (v, num_bytes))
+        }
+    }
+}
+
 fn decode_bulk_string(buf: &[u8]) -> Result<(Data, usize)> {
     assert_eq!(buf[0] as char, '$');
 
@@ -62,20 +80,8 @@ fn decode_bulk_string(buf: &[u8]) -> Result<(Data, usize)> {
     } else {
         let mut curr = 1;
 
-        let length: usize = {
-            let mut length_buf = String::new();
-            while curr < buf.len() {
-                let c = buf[curr] as char;
-                if char::is_numeric(c) {
-                    length_buf.push(c);
-                } else {
-                    break;
-                }
-
-                curr += 1;
-            }
-            length_buf.parse().unwrap()
-        };
+        let (length, num_bytes_consumed) = decode_number(&buf[curr..]).unwrap();
+        curr += num_bytes_consumed;
 
         // Check \r\n
         assert_eq!(buf[curr] as char, '\r');
@@ -111,6 +117,30 @@ fn decode_simple_string(buf: &[u8]) -> Result<(Data, usize)> {
     Ok((Data::SimpleString(buf[1..end].into()), end + 2))
 }
 
+fn decode_array(buf: &[u8]) -> Result<(Data, usize)> {
+    assert_eq!(buf[0] as char, '*');
+
+    let mut curr = 1;
+
+    let (length, num_bytes) = decode_number(&buf[curr..]).unwrap();
+    curr += num_bytes;
+
+    // \r\n
+    assert_eq!(buf[curr] as char, '\r');
+    curr += 1;
+    assert_eq!(buf[curr] as char, '\n');
+    curr += 1;
+
+    let mut values = Vec::new();
+    for _ in 0..length {
+        let (data, num_bytes) = Data::decode(&buf[curr..])?;
+        values.push(data);
+        curr += num_bytes;
+    }
+
+    Ok((Data::Array(values), curr))
+}
+
 impl Data {
     pub fn encode(&self) -> Vec<u8> {
         match self {
@@ -126,6 +156,7 @@ impl Data {
         match buf[0] as char {
             '+' => decode_simple_string(buf),
             '$' => decode_bulk_string(buf),
+            '*' => decode_array(buf),
             c => Err(anyhow::anyhow!("Unrecognized data type: {}", c)),
         }
     }
@@ -144,14 +175,35 @@ mod tests {
 
     #[test]
     fn simple_string() {
-        roundtrip(Data::SimpleString(String::from("").into()));
-        roundtrip(Data::SimpleString(String::from("abc").into()));
+        roundtrip(Data::SimpleString("".into()));
+        roundtrip(Data::SimpleString("abc".into()));
     }
 
     #[test]
     fn bulk_string() {
-        roundtrip(Data::BulkString(String::from("").into()));
-        roundtrip(Data::BulkString(String::from("abc").into()));
+        roundtrip(Data::BulkString("".into()));
+        roundtrip(Data::BulkString("abc".into()));
         roundtrip(Data::NullBulkString);
+    }
+
+    #[test]
+    fn array() {
+        roundtrip(Data::Array(Vec::new()));
+        roundtrip(Data::Array(vec![Data::SimpleString("a".into())]));
+        roundtrip(Data::Array(vec![
+            Data::SimpleString("a".into()),
+            Data::SimpleString("ab".into()),
+        ]));
+        roundtrip(Data::Array(vec![
+            Data::SimpleString("a".into()),
+            Data::SimpleString("ab".into()),
+            Data::BulkString("abc".into()),
+        ]));
+        roundtrip(Data::Array(vec![
+            Data::SimpleString("a".into()),
+            Data::SimpleString("ab".into()),
+            Data::BulkString("abc".into()),
+            Data::Array(vec![Data::SimpleString("abcd".into())]),
+        ]));
     }
 }
