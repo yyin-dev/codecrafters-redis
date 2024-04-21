@@ -5,6 +5,8 @@ use anyhow::anyhow;
 use anyhow::Result;
 use base64::Engine;
 use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering::SeqCst;
+use std::thread;
 use std::{
     net::TcpStream,
     sync::{Arc, Mutex},
@@ -13,7 +15,7 @@ use std::{
 
 struct ReplicaHandle {
     id: usize,
-    offset: AtomicUsize,
+    replicated_offset: AtomicUsize,
     conn: Connection,
 }
 
@@ -61,7 +63,7 @@ impl Master {
 
                         let handle = ReplicaHandle {
                             id: inner.replicas.len(),
-                            offset: AtomicUsize::new(0),
+                            replicated_offset: AtomicUsize::new(0),
                             conn,
                         };
                         let handle = Arc::new(handle);
@@ -90,7 +92,6 @@ impl Master {
                     break;
                 }
                 Ok(data) => {
-                    println!("From replica: {}", data);
                     if let Data::Array(vs) = data {
                         let string_at = |idx: usize| -> Result<String> {
                             vs[idx].get_string().ok_or(anyhow!("fail to get string"))
@@ -103,7 +104,7 @@ impl Master {
                                 let offset = string_at(2)?.parse::<usize>()?;
 
                                 let old_offset = handle
-                                    .offset
+                                    .replicated_offset
                                     .fetch_update(
                                         std::sync::atomic::Ordering::SeqCst,
                                         std::sync::atomic::Ordering::SeqCst,
@@ -130,6 +131,7 @@ impl Master {
     // Return true if this connection is from a replica (b/c we just completed a handshake)
     fn handle_data(&self, conn: &mut Connection, data: Data) -> Result<bool> {
         println!("Recv: {}", data);
+        let num_bytes = data.num_bytes();
         match data {
             Data::Array(vs) => {
                 let string_at = |idx: usize| -> Result<String> {
@@ -178,6 +180,9 @@ impl Master {
                             .iter_mut()
                             .map(|replica| replica.conn.write_data(Data::Array(vs.clone())))
                             .collect::<Result<Vec<()>>>()?;
+
+                        inner.replication_offset += num_bytes;
+                        println!("replication offset: +{}", inner.replication_offset);
                     }
                     "info" => match string_at(1)?.to_ascii_lowercase().as_str() {
                         "replication" => {
@@ -232,12 +237,20 @@ impl Master {
                         let num_replicas = inner.replicas.len();
                         let num_replicas_to_wait = string_at(1)?.parse::<usize>()?;
 
-                        if num_replicas == 0
-                            || num_replicas_to_wait == 0
-                            || inner.replication_offset == 0
-                        {
-                            conn.write_data(Data::Integer(num_replicas as i64))?
+                        let mut cnt = 0;
+                        for r in inner.replicas.iter() {
+                            if r.replicated_offset.load(SeqCst) == inner.replication_offset {
+                                cnt += 1;
+                            }
                         }
+
+                        if num_replicas_to_wait > cnt {
+                            // This is not ideal, but at least correct
+                            let timeout = Duration::from_millis(string_at(2)?.parse()?);
+                            thread::sleep(timeout);
+                        }
+
+                        conn.write_data(Data::Integer(num_replicas as i64))?
                     }
                     command => panic!("unknown command: {}", command),
                 }
