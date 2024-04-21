@@ -82,7 +82,7 @@ impl Replica {
             let self_clone = self.clone();
             let conn_clone = conn.clone();
             std::thread::spawn(move || {
-                let report_every = Duration::from_millis(100);
+                let report_every = Duration::from_millis(1000);
 
                 loop {
                     let res = conn_clone.write_data(Data::Array(vec![
