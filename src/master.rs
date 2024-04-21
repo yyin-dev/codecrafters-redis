@@ -1,6 +1,7 @@
 use crate::connection::Connection;
 use crate::data::{self, Data};
 use crate::mode::MasterParams;
+use crate::rdb::Rdb;
 use crate::store::Store;
 use anyhow::anyhow;
 use anyhow::Result;
@@ -28,6 +29,7 @@ pub struct MasterInner {
 pub struct Master {
     dir: Option<PathBuf>,
     dbfilename: Option<String>,
+    rdb: Rdb,
     inner: Arc<Mutex<MasterInner>>,
 }
 
@@ -39,9 +41,21 @@ impl Master {
             store: Store::new(),
             replicas: Vec::new(),
         };
+
+        let path = match (params.dir.clone(), params.dbfilename.clone()) {
+            (None, _) | (_, None) => None,
+            (Some(mut dir), Some(dbfilename)) => {
+                dir.push(dbfilename);
+                Some(dir)
+            }
+        };
+        let rdb = Rdb::read(path)?;
+        println!("Rdb: {:?}", rdb);
+
         let master = Self {
             dir: params.dir,
             dbfilename: params.dbfilename,
+            rdb,
             inner: Arc::new(Mutex::new(inner)),
         };
 
@@ -96,6 +110,19 @@ impl Master {
                         assert_eq!(vs.len(), 2);
                         let string = string_at(1)?;
                         conn.write_data(Data::BulkString(string.into()))?
+                    }
+                    "keys" => {
+                        assert_eq!(vs.len(), 2);
+                        assert_eq!(string_at(1)?, "*");
+
+                        let keys = self
+                            .rdb
+                            .kvs
+                            .keys()
+                            .into_iter()
+                            .map(|k| Data::BulkString(k.as_str().into()))
+                            .collect();
+                        conn.write_data(Data::Array(keys))?
                     }
                     "config" => {
                         assert_eq!(vs.len(), 3);

@@ -6,8 +6,9 @@ use std::{
     path::PathBuf,
 };
 
+#[derive(Debug)]
 pub struct Rdb {
-    kvs: HashMap<String, String>,
+    pub kvs: HashMap<String, String>,
 }
 
 const EOF: u8 = 0xff;
@@ -139,6 +140,7 @@ impl Rdb {
 
         // Parts
         let mut op_code = [0; 1];
+        let mut kvs = HashMap::new();
         while f.read_exact(&mut op_code).is_ok() {
             match op_code[0] {
                 AUX => {
@@ -172,21 +174,37 @@ impl Rdb {
                     let key = decode_string(&mut f)?;
                     let value = decode_value(value_code, &mut f)?;
                     println!("KV: {}, {:?}", key, value);
+
+                    let Value::String(s) = value;
+                    kvs.insert(key, s);
                 }
             }
         }
 
-        Ok(Self {
-            kvs: HashMap::new(),
-        })
+        Ok(Self { kvs })
     }
 
-    pub fn read(path: PathBuf) -> Result<Self> {
-        let f = BufReader::new(File::open(path)?);
-        Self::read_from_buf(f)
+    pub fn read(path: Option<PathBuf>) -> Result<Self> {
+        let empty = Self {
+            kvs: HashMap::new(),
+        };
+        match path {
+            None => Ok(empty),
+            Some(path) => match File::open(path) {
+                Ok(f) => {
+                    let f = BufReader::new(f);
+                    Self::read_from_buf(f)
+                }
+                Err(err) => {
+                    println!("Error opening file: {}", err);
+                    Ok(empty)
+                }
+            },
+        }
     }
 }
 
+#[cfg(test)]
 mod tests {
     use base64::Engine;
 
