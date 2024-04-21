@@ -77,36 +77,36 @@ impl Replica {
         println!("Start handling replication cmds...");
         let conn = Arc::new(conn);
 
-        // Periodically report offset to master
-        {
-            let self_clone = self.clone();
-            let conn_clone = conn.clone();
-            std::thread::spawn(move || {
-                let report_every = Duration::from_millis(1000);
+        // // Periodically report offset to master
+        // {
+        //     let self_clone = self.clone();
+        //     let conn_clone = conn.clone();
+        //     std::thread::spawn(move || {
+        //         let report_every = Duration::from_millis(1000);
 
-                loop {
-                    let res = conn_clone.write_data(Data::Array(vec![
-                        Data::BulkString("REPLCONF".into()),
-                        Data::BulkString("ACK".into()),
-                        Data::BulkString(
-                            self_clone
-                                .replication_offset
-                                .lock()
-                                .unwrap()
-                                .to_string()
-                                .into(),
-                        ),
-                    ]));
+        //         loop {
+        //             let res = conn_clone.write_data(Data::Array(vec![
+        //                 Data::BulkString("REPLCONF".into()),
+        //                 Data::BulkString("ACK".into()),
+        //                 Data::BulkString(
+        //                     self_clone
+        //                         .replication_offset
+        //                         .lock()
+        //                         .unwrap()
+        //                         .to_string()
+        //                         .into(),
+        //                 ),
+        //             ]));
 
-                    if res.is_err() {
-                        println!("Failed to report offset. Exiting...");
-                        break;
-                    }
+        //             if res.is_err() {
+        //                 println!("Failed to report offset. Exiting...");
+        //                 break;
+        //             }
 
-                    thread::sleep(report_every);
-                }
-            });
-        }
+        //             thread::sleep(report_every);
+        //         }
+        //     });
+        // }
 
         loop {
             let res = conn.read_data();
