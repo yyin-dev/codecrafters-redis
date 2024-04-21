@@ -4,6 +4,7 @@ use crate::store::Store;
 use anyhow::anyhow;
 use anyhow::Result;
 use base64::Engine;
+use std::sync::atomic::AtomicUsize;
 use std::{
     net::TcpStream,
     sync::{Arc, Mutex},
@@ -12,7 +13,7 @@ use std::{
 
 struct ReplicaHandle {
     id: usize,
-    offset: usize,
+    offset: AtomicUsize,
     conn: Connection,
 }
 
@@ -20,7 +21,7 @@ pub struct MasterInner {
     replication_id: String,
     replication_offset: usize,
     store: Store,
-    replicas: Vec<Arc<Mutex<ReplicaHandle>>>,
+    replicas: Vec<Arc<ReplicaHandle>>,
 }
 
 pub struct Master {
@@ -58,15 +59,16 @@ impl Master {
                     if is_replica {
                         let mut inner = self.inner.lock().unwrap();
 
-                        let id = inner.replicas.len();
                         let handle = ReplicaHandle {
-                            id,
-                            offset: 0,
+                            id: inner.replicas.len(),
+                            offset: AtomicUsize::new(0),
                             conn,
                         };
-                        let handle = Arc::new(Mutex::new(handle));
+                        let handle = Arc::new(handle);
 
                         inner.replicas.push(handle.clone());
+                        drop(inner);
+
                         self.handle_replica(handle)?;
 
                         break;
@@ -78,7 +80,50 @@ impl Master {
         Ok(())
     }
 
-    fn handle_replica(&self, handle: Arc<Mutex<ReplicaHandle>>) -> Result<()> {
+    fn handle_replica(&self, handle: Arc<ReplicaHandle>) -> Result<()> {
+        loop {
+            let res = handle.conn.read_data();
+
+            match res {
+                Err(err) => {
+                    println!("Error reading data, will close replication conn: {}", err);
+                    break;
+                }
+                Ok(data) => {
+                    println!("From replica: {}", data);
+                    if let Data::Array(vs) = data {
+                        let string_at = |idx: usize| -> Result<String> {
+                            vs[idx].get_string().ok_or(anyhow!("fail to get string"))
+                        };
+
+                        match string_at(0)?.to_ascii_uppercase().as_str() {
+                            "REPLCONF" => {
+                                assert_eq!(vs.len(), 3);
+                                assert_eq!(string_at(1)?, "ACK");
+                                let offset = string_at(2)?.parse::<usize>()?;
+
+                                let old_offset = handle
+                                    .offset
+                                    .fetch_update(
+                                        std::sync::atomic::Ordering::SeqCst,
+                                        std::sync::atomic::Ordering::SeqCst,
+                                        |_| Some(offset),
+                                    )
+                                    .unwrap();
+
+                                if old_offset < offset {
+                                    println!("Replica {}: {} -> {}", handle.id, old_offset, offset);
+                                }
+                            }
+                            _ => unreachable!(),
+                        }
+                    } else {
+                        unreachable!()
+                    }
+                }
+            };
+        }
+
         Ok(())
     }
 
@@ -131,13 +176,7 @@ impl Master {
                         inner
                             .replicas
                             .iter_mut()
-                            .map(|replica| {
-                                replica
-                                    .lock()
-                                    .unwrap()
-                                    .conn
-                                    .write_data(Data::Array(vs.clone()))
-                            })
+                            .map(|replica| replica.conn.write_data(Data::Array(vs.clone())))
                             .collect::<Result<Vec<()>>>()?;
                     }
                     "info" => match string_at(1)?.to_ascii_lowercase().as_str() {
