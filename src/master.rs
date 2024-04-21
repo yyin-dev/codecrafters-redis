@@ -35,13 +35,6 @@ pub struct Master {
 
 impl Master {
     pub fn new(params: MasterParams) -> Result<Self> {
-        let inner = MasterInner {
-            replication_id: "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb".into(),
-            replication_offset: 0,
-            store: Store::new(),
-            replicas: Vec::new(),
-        };
-
         let path = match (params.dir.clone(), params.dbfilename.clone()) {
             (None, _) | (_, None) => None,
             (Some(mut dir), Some(dbfilename)) => {
@@ -51,6 +44,18 @@ impl Master {
         };
         let rdb = Rdb::read(path)?;
         println!("Rdb: {:?}", rdb);
+
+        let store = Store::new();
+        for (k, v) in rdb.kvs.iter() {
+            store.set(k.clone(), v.clone(), None);
+        }
+
+        let inner = MasterInner {
+            replication_id: "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb".into(),
+            replication_offset: 0,
+            store,
+            replicas: Vec::new(),
+        };
 
         let master = Self {
             dir: params.dir,
