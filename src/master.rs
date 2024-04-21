@@ -4,8 +4,6 @@ use crate::store::Store;
 use anyhow::anyhow;
 use anyhow::Result;
 use base64::Engine;
-use std::sync::atomic::AtomicUsize;
-use std::sync::atomic::Ordering::SeqCst;
 use std::sync::mpsc;
 use std::{
     net::TcpStream,
@@ -198,58 +196,95 @@ impl Master {
                             println!("Waiting acks from replicas...");
 
                             let cnt = {
+                                // Implement timeout: https://stackoverflow.com/a/42720480/9057530
                                 let timeout = Duration::from_millis(string_at(2)?.parse()?);
                                 let (tx, rx) = mpsc::channel();
                                 let replication_offset = inner.replication_offset;
-                                let cnt = Arc::new(AtomicUsize::new(0));
-                                for r in inner.replicas.iter() {
-                                    let r = r.clone();
-                                    let cnt = cnt.clone();
-                                    let tx = tx.clone();
-                                    std::thread::spawn(move || -> Result<()> {
-                                        let data = r.conn.read_data()?;
-                                        if let Data::Array(vs) = data {
-                                            let string_at = |idx: usize| -> Result<String> {
-                                                vs[idx]
-                                                    .get_string()
-                                                    .ok_or(anyhow!("fail to get string"))
-                                            };
+                                let cnt = Arc::new(Mutex::new(0));
 
-                                            match string_at(0)?.to_ascii_uppercase().as_str() {
-                                                "REPLCONF" => {
-                                                    assert_eq!(vs.len(), 3);
-                                                    assert_eq!(string_at(1)?, "ACK");
-                                                    let offset = string_at(2)?.parse::<usize>()?;
-                                                    println!(
+                                let replicas = inner.replicas.clone();
+
+                                {
+                                    let cnt = cnt.clone();
+
+                                    // The idea is to query replicas for replicated offsets.
+                                    // 
+                                    // Two possible ways to implement this:
+                                    // 1. Query all replicas in order, in one thread.
+                                    // 2. Spawn one thread for each replica and query offsets in parallel.
+                                    // 
+                                    // The 1st approach is simpler and passes the tests. The 2nd approach
+                                    // is more correct but doesn't pass the tests.
+                                    // 
+                                    // The following events happen in the test:
+                                    // 
+                                    // Start 3 replicas and 1 master
+                                    // to master: Set foo 123 (which gets replicated to all 3 replicas)
+                                    // to master: WAIT 1 500
+                                    // Only replica-1 responds REPLCONF ACK
+                                    //
+                                    // to master: SET bar 456 (which gets replicated to all 3 replicas)
+                                    // to master: WAIT 3 500
+                                    // Only replica-1 and replica-2 reponds REPLCONF ACK
+                                    //
+                                    // If we implement the 2nd approach, when the master is waiting
+                                    // for an ACK of "SET bar", a thread is still blocked waiting
+                                    // for REPLCONF ACK from replica-2 for "SET foo". In other words,
+                                    // two threads are waiting for REPLCONF ACK from replica-2, but
+                                    // only one is sent. 
+                                    // This is not a problem for the 1st approach because we woulnd't
+                                    // try to query replica-2's offset.
+                                    std::thread::spawn(move || -> Result<()> {
+                                        for r in replicas.iter() {
+                                            let r = r.clone();
+                                            println!("Waiting replica {} response", r.id);
+                                            let data = r.conn.read_data()?;
+                                            if let Data::Array(vs) = data {
+                                                let string_at = |idx: usize| -> Result<String> {
+                                                    vs[idx]
+                                                        .get_string()
+                                                        .ok_or(anyhow!("fail to get string"))
+                                                };
+
+                                                match string_at(0)?.to_ascii_uppercase().as_str() {
+                                                    "REPLCONF" => {
+                                                        assert_eq!(vs.len(), 3);
+                                                        assert_eq!(string_at(1)?, "ACK");
+                                                        let offset =
+                                                            string_at(2)?.parse::<usize>()?;
+                                                        println!(
                                                         "replica {}: {}. Replication offset: {}",
                                                         r.id, offset, replication_offset
                                                     );
-                                                    if offset == replication_offset {
-                                                        cnt.fetch_update(SeqCst, SeqCst, |c| {
-                                                            if c + 1 == num_replicas_to_wait {
+                                                        if offset >= replication_offset {
+                                                            let mut cnt = cnt.lock().unwrap();
+                                                            *cnt += 1;
+
+                                                            if *cnt == num_replicas_to_wait {
                                                                 match tx.send(()) {
                                                                     Ok(()) => (),
                                                                     Err(_) => (),
                                                                 };
+                                                                break;
                                                             }
-                                                            Some(c + 1)
-                                                        })
-                                                        .unwrap();
-                                                    };
-                                                    Ok(())
+                                                        };
+                                                    }
+                                                    _ => unreachable!(),
                                                 }
-                                                _ => unreachable!(),
+                                            } else {
+                                                unreachable!()
                                             }
-                                        } else {
-                                            unreachable!()
                                         }
+                                        Ok(())
                                     });
                                 }
 
                                 if let Err(err) = rx.recv_timeout(timeout) {
                                     println!("Timeout: {}", err);
                                 };
-                                cnt.load(SeqCst)
+
+                                let cnt = *cnt.lock().unwrap();
+                                cnt
                             };
                             println!("cnt: {}", cnt);
 
