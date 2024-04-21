@@ -43,10 +43,10 @@ impl Master {
             }
         };
         let rdb = Rdb::read(path)?;
-        println!("Rdb: {:?}", rdb);
+        println!("Rdb: {:?}", rdb.store.data());
 
         let store = Store::new();
-        for (k, v) in rdb.kvs.iter() {
+        for (k, v) in rdb.store.data().iter() {
             store.set(k.clone(), v.clone(), None);
         }
 
@@ -122,7 +122,8 @@ impl Master {
 
                         let keys = self
                             .rdb
-                            .kvs
+                            .store
+                            .data()
                             .keys()
                             .into_iter()
                             .map(|k| Data::BulkString(k.as_str().into()))

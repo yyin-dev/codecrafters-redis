@@ -1,18 +1,20 @@
 use anyhow::Result;
 use std::{
-    collections::HashMap,
     fs::File,
     io::{BufReader, Read},
     path::PathBuf,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-#[derive(Debug)]
+use crate::store::Store;
+
 pub struct Rdb {
-    pub kvs: HashMap<String, String>,
+    pub store: Store,
 }
 
 const EOF: u8 = 0xff;
 const SELECTDB: u8 = 0xfe;
+const EXP_MS: u8 = 0xfc;
 const RESIZEDB: u8 = 0xfb;
 const AUX: u8 = 0xfa;
 
@@ -121,6 +123,12 @@ fn decode_value<R: Read>(value_code: u8, reader: &mut BufReader<R>) -> Result<Va
     }
 }
 
+fn decode_key_value<R: Read>(value_code: u8, reader: &mut BufReader<R>) -> Result<(String, Value)> {
+    let key = decode_string(reader)?;
+    let value = decode_value(value_code, reader)?;
+    Ok((key, value))
+}
+
 impl Rdb {
     fn read_from_buf<R: Read>(mut f: BufReader<R>) -> Result<Self> {
         let mut read_exact = |n: usize| -> Result<Vec<u8>> {
@@ -140,7 +148,7 @@ impl Rdb {
 
         // Parts
         let mut op_code = [0; 1];
-        let mut kvs = HashMap::new();
+        let store = Store::new();
         while f.read_exact(&mut op_code).is_ok() {
             match op_code[0] {
                 AUX => {
@@ -163,6 +171,23 @@ impl Rdb {
                         data_hashtbl_size, expiry_hashtbl_size
                     );
                 }
+                EXP_MS => {
+                    println!("EXP_MS");
+                    let mut buf = [0; 8];
+                    f.read_exact(&mut buf)?;
+                    let exp = UNIX_EPOCH + Duration::from_millis(u64::from_le_bytes(buf));
+                    let curr = SystemTime::now();
+
+                    f.read_exact(&mut op_code)?;
+                    let (key, value) = decode_key_value(op_code[0], &mut f)?;
+                    println!("KV: {}, {:?}, exp={:?}", key, value, exp);
+
+                    if exp > curr {
+                        let exp_in = exp.duration_since(curr)?;
+                        let Value::String(s) = value;
+                        store.set(key, s, Some(exp_in));
+                    }
+                }
                 EOF => {
                     println!("EOF");
                     let mut buf = Vec::new();
@@ -171,22 +196,22 @@ impl Rdb {
                 }
                 value_code => {
                     println!("VALUE");
-                    let key = decode_string(&mut f)?;
-                    let value = decode_value(value_code, &mut f)?;
+
+                    let (key, value) = decode_key_value(value_code, &mut f)?;
                     println!("KV: {}, {:?}", key, value);
 
                     let Value::String(s) = value;
-                    kvs.insert(key, s);
+                    store.set(key, s, None);
                 }
             }
         }
 
-        Ok(Self { kvs })
+        Ok(Self { store })
     }
 
     pub fn read(path: Option<PathBuf>) -> Result<Self> {
         let empty = Self {
-            kvs: HashMap::new(),
+            store: Store::new(),
         };
         match path {
             None => Ok(empty),
@@ -217,6 +242,9 @@ mod tests {
     // Rdb file containing 'foo:123' and 'bar:456'. Encoded in base64.
     const MULTI_KEY_RDB: &str ="UkVESVMwMDEx+glyZWRpcy12ZXIFNy4yLjT6CnJlZGlzLWJpdHPAQPoFY3RpbWXCSlslZvoIdXNlZC1tZW3C8IURAPoIYW9mLWJhc2XAAP4A+wIAAANiYXLByAEAA2Zvb8B7/yfdZT6cKrHT";
 
+    // Rdb file containing 'foo:123', 'bar:456', 'baz:789 with expiration'. Encoded in base64.
+    const WITH_EXP_RDB: &str = "UkVESVMwMDEx+glyZWRpcy12ZXIFNy4yLjT6CnJlZGlzLWJpdHPAQPoFY3RpbWXCpWQlZvoIdXNlZC1tZW3CoIYRAPoIYW9mLWJhc2XAAP4A+wMBAANmb2/AewADYmFywcgB/PQ1EQKPAQAAAANiYXrBFQP/emKeCGa6hyo=";
+
     fn single_key_rdb() -> Vec<u8> {
         base64::engine::general_purpose::STANDARD
             .decode(SINGLE_KEY_RDB)
@@ -225,6 +253,12 @@ mod tests {
     fn multi_key_rdb() -> Vec<u8> {
         base64::engine::general_purpose::STANDARD
             .decode(MULTI_KEY_RDB)
+            .unwrap()
+    }
+
+    fn with_exp_rdb() -> Vec<u8> {
+        base64::engine::general_purpose::STANDARD
+            .decode(WITH_EXP_RDB)
             .unwrap()
     }
 
@@ -254,12 +288,20 @@ mod tests {
     #[test]
     fn test_read() {
         let rdb = Rdb::read_from_buf(BufReader::new(&single_key_rdb()[..])).unwrap();
-        assert_eq!(rdb.kvs.len(), 1);
-        assert_eq!(rdb.kvs.get("foo").unwrap(), "bar");
+        assert_eq!(rdb.store.data().len(), 1);
+        assert_eq!(rdb.store.get("foo").unwrap(), "bar");
 
         let rdb = Rdb::read_from_buf(BufReader::new(&multi_key_rdb()[..])).unwrap();
-        assert_eq!(rdb.kvs.len(), 2);
-        assert_eq!(rdb.kvs.get("foo").unwrap(), "123");
-        assert_eq!(rdb.kvs.get("bar").unwrap(), "456");
+        assert_eq!(rdb.store.data().len(), 2);
+        assert_eq!(rdb.store.get("foo").unwrap(), "123");
+        assert_eq!(rdb.store.get("bar").unwrap(), "456");
+    }
+
+    #[test]
+    fn test_read_exp() {
+        let rdb = Rdb::read_from_buf(BufReader::new(&(with_exp_rdb())[..])).unwrap();
+        assert_eq!(rdb.store.data().len(), 2);
+        assert_eq!(rdb.store.get("foo").unwrap(), "123");
+        assert_eq!(rdb.store.get("bar").unwrap(), "456");
     }
 }

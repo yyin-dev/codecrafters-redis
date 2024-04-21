@@ -59,4 +59,18 @@ impl Store {
             }
         }
     }
+
+    pub fn data(&self) -> HashMap<String, String> {
+        let mut map = self.map.lock().unwrap();
+
+        *map = map
+            .iter()
+            .filter(|&(_, v)| !v.has_expired())
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+
+        map.iter()
+            .map(|(k, v)| (k.clone(), v.data.clone()))
+            .collect()
+    }
 }
