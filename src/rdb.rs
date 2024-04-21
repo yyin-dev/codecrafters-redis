@@ -211,11 +211,20 @@ mod tests {
     use super::*;
 
     // Rdb file containing a single key value: 'foo:bar'. Encoded in base64.
+    // Obtained by: $ cat FILE | base64
     const SINGLE_KEY_RDB: &str = "UkVESVMwMDEx+glyZWRpcy12ZXIFNy4yLjT6CnJlZGlzLWJpdHPAQPoFY3RpbWXCqywlZvoIdXNlZC1tZW3CwIURAPoIYW9mLWJhc2XAAP4A+wEAAANmb28DYmFy/+CZ/pfpGCmk";
+
+    // Rdb file containing 'foo:123' and 'bar:456'. Encoded in base64.
+    const MULTI_KEY_RDB: &str ="UkVESVMwMDEx+glyZWRpcy12ZXIFNy4yLjT6CnJlZGlzLWJpdHPAQPoFY3RpbWXCSlslZvoIdXNlZC1tZW3C8IURAPoIYW9mLWJhc2XAAP4A+wIAAANiYXLByAEAA2Zvb8B7/yfdZT6cKrHT";
 
     fn single_key_rdb() -> Vec<u8> {
         base64::engine::general_purpose::STANDARD
             .decode(SINGLE_KEY_RDB)
+            .unwrap()
+    }
+    fn multi_key_rdb() -> Vec<u8> {
+        base64::engine::general_purpose::STANDARD
+            .decode(MULTI_KEY_RDB)
             .unwrap()
     }
 
@@ -244,6 +253,13 @@ mod tests {
 
     #[test]
     fn test_read() {
-        Rdb::read_from_buf(BufReader::new(&single_key_rdb()[..])).unwrap();
+        let rdb = Rdb::read_from_buf(BufReader::new(&single_key_rdb()[..])).unwrap();
+        assert_eq!(rdb.kvs.len(), 1);
+        assert_eq!(rdb.kvs.get("foo").unwrap(), "bar");
+
+        let rdb = Rdb::read_from_buf(BufReader::new(&multi_key_rdb()[..])).unwrap();
+        assert_eq!(rdb.kvs.len(), 2);
+        assert_eq!(rdb.kvs.get("foo").unwrap(), "123");
+        assert_eq!(rdb.kvs.get("bar").unwrap(), "456");
     }
 }
