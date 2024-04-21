@@ -6,7 +6,7 @@ use anyhow::Result;
 use base64::Engine;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::SeqCst;
-use std::thread;
+use std::sync::mpsc;
 use std::{
     net::TcpStream,
     sync::{Arc, Mutex},
@@ -15,7 +15,6 @@ use std::{
 
 struct ReplicaHandle {
     id: usize,
-    replicated_offset: AtomicUsize,
     conn: Connection,
 }
 
@@ -63,13 +62,11 @@ impl Master {
 
                         let handle = ReplicaHandle {
                             id: inner.replicas.len(),
-                            replicated_offset: AtomicUsize::new(0),
                             conn,
                         };
                         let handle = Arc::new(handle);
 
                         inner.replicas.push(handle.clone());
-
                         break;
                     }
                 }
@@ -187,51 +184,81 @@ impl Master {
 
                         let num_replicas_to_wait = string_at(1)?.parse::<usize>()?;
 
-                        let getack = Data::Array(vec![
-                            Data::BulkString("REPLCONF".into()),
-                            Data::BulkString("GETACK".into()),
-                            Data::BulkString("*".into()),
-                        ]);
-                        for r in inner.replicas.iter() {
-                            r.conn.write_data(getack.clone())?;
-                        }
-
-                        let mut cnt = 0;
-                        for r in inner.replicas.iter() {
-                            let data = r.conn.read_data()?;
-                            if let Data::Array(vs) = data {
-                                let string_at = |idx: usize| -> Result<String> {
-                                    vs[idx].get_string().ok_or(anyhow!("fail to get string"))
-                                };
-
-                                match string_at(0)?.to_ascii_uppercase().as_str() {
-                                    "REPLCONF" => {
-                                        assert_eq!(vs.len(), 3);
-                                        assert_eq!(string_at(1)?, "ACK");
-                                        let offset = string_at(2)?.parse::<usize>()?;
-                                        println!("replica {}: {}", r.id, offset);
-                                        if offset == inner.replication_offset {
-                                            cnt += 1;
-                                        }
-                                    }
-                                    _ => unreachable!(),
-                                }
-                            } else {
-                                unreachable!()
+                        if num_replicas_to_wait > 0 && inner.replication_offset > 0 {
+                            println!("Sending getack to replicas...");
+                            let getack = Data::Array(vec![
+                                Data::BulkString("REPLCONF".into()),
+                                Data::BulkString("GETACK".into()),
+                                Data::BulkString("*".into()),
+                            ]);
+                            for r in inner.replicas.iter() {
+                                r.conn.write_data(getack.clone())?;
                             }
+
+                            println!("Waiting acks from replicas...");
+
+                            let cnt = {
+                                let timeout = Duration::from_millis(string_at(2)?.parse()?);
+                                let (tx, rx) = mpsc::channel();
+                                let replication_offset = inner.replication_offset;
+                                let cnt = Arc::new(AtomicUsize::new(0));
+                                for r in inner.replicas.iter() {
+                                    let r = r.clone();
+                                    let cnt = cnt.clone();
+                                    let tx = tx.clone();
+                                    std::thread::spawn(move || -> Result<()> {
+                                        let data = r.conn.read_data()?;
+                                        if let Data::Array(vs) = data {
+                                            let string_at = |idx: usize| -> Result<String> {
+                                                vs[idx]
+                                                    .get_string()
+                                                    .ok_or(anyhow!("fail to get string"))
+                                            };
+
+                                            match string_at(0)?.to_ascii_uppercase().as_str() {
+                                                "REPLCONF" => {
+                                                    assert_eq!(vs.len(), 3);
+                                                    assert_eq!(string_at(1)?, "ACK");
+                                                    let offset = string_at(2)?.parse::<usize>()?;
+                                                    println!(
+                                                        "replica {}: {}. Replication offset: {}",
+                                                        r.id, offset, replication_offset
+                                                    );
+                                                    if offset == replication_offset {
+                                                        cnt.fetch_update(SeqCst, SeqCst, |c| {
+                                                            if c + 1 == num_replicas_to_wait {
+                                                                match tx.send(()) {
+                                                                    Ok(()) => (),
+                                                                    Err(_) => (),
+                                                                };
+                                                            }
+                                                            Some(c + 1)
+                                                        })
+                                                        .unwrap();
+                                                    };
+                                                    Ok(())
+                                                }
+                                                _ => unreachable!(),
+                                            }
+                                        } else {
+                                            unreachable!()
+                                        }
+                                    });
+                                }
+
+                                if let Err(err) = rx.recv_timeout(timeout) {
+                                    println!("Timeout: {}", err);
+                                };
+                                cnt.load(SeqCst)
+                            };
+                            println!("cnt: {}", cnt);
+
+                            inner.replication_offset += getack.num_bytes();
+                            println!("replication offset: +{}", getack.num_bytes());
+                            conn.write_data(Data::Integer(cnt as i64))?
+                        } else {
+                            conn.write_data(Data::Integer(inner.replicas.len() as i64))?
                         }
-                        println!("cnt: {}", cnt);
-
-                        inner.replication_offset += getack.num_bytes();
-                        println!("replication offset: +{}", getack.num_bytes());
-
-                        if num_replicas_to_wait > cnt {
-                            // This is not ideal, but at least correct
-                            let timeout = Duration::from_millis(string_at(2)?.parse()?);
-                            thread::sleep(timeout);
-                        }
-
-                        conn.write_data(Data::Integer(inner.replicas.len() as i64))?
                     }
                     command => panic!("unknown command: {}", command),
                 }
