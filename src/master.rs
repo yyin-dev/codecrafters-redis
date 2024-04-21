@@ -1,9 +1,11 @@
 use crate::connection::Connection;
 use crate::data::{self, Data};
+use crate::mode::MasterParams;
 use crate::store::Store;
 use anyhow::anyhow;
 use anyhow::Result;
 use base64::Engine;
+use std::path::PathBuf;
 use std::sync::mpsc;
 use std::{
     net::TcpStream,
@@ -24,11 +26,13 @@ pub struct MasterInner {
 }
 
 pub struct Master {
+    dir: Option<PathBuf>,
+    dbfilename: Option<String>,
     inner: Arc<Mutex<MasterInner>>,
 }
 
 impl Master {
-    pub fn new() -> Result<Self> {
+    pub fn new(params: MasterParams) -> Result<Self> {
         let inner = MasterInner {
             replication_id: "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb".into(),
             replication_offset: 0,
@@ -36,6 +40,8 @@ impl Master {
             replicas: Vec::new(),
         };
         let master = Self {
+            dir: params.dir,
+            dbfilename: params.dbfilename,
             inner: Arc::new(Mutex::new(inner)),
         };
 
@@ -90,6 +96,32 @@ impl Master {
                         assert_eq!(vs.len(), 2);
                         let string = string_at(1)?;
                         conn.write_data(Data::BulkString(string.into()))?
+                    }
+                    "config" => {
+                        assert_eq!(vs.len(), 3);
+                        assert_eq!(vs[1].get_string().unwrap().to_ascii_lowercase(), "get");
+                        match string_at(2)?.to_ascii_lowercase().as_str() {
+                            "dir" => {
+                                let dir = self
+                                    .dir
+                                    .as_ref()
+                                    .map(|p| p.clone().into_os_string().into_string())
+                                    .unwrap()
+                                    .unwrap();
+                                conn.write_data(Data::Array(vec![
+                                    Data::BulkString("dir".into()),
+                                    Data::BulkString(dir.into()),
+                                ]))?
+                            }
+                            "dbfilename" => {
+                                let dbfilename = self.dbfilename.as_ref().unwrap().to_string();
+                                conn.write_data(Data::Array(vec![
+                                    Data::BulkString("dbfilename".into()),
+                                    Data::BulkString(dbfilename.into()),
+                                ]))?
+                            }
+                            _ => unreachable!(),
+                        };
                     }
                     "get" => {
                         let inner = self.inner.lock().unwrap();

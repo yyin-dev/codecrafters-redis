@@ -1,5 +1,5 @@
-pub mod data;
 pub mod connection;
+pub mod data;
 mod master;
 mod mode;
 mod replica;
@@ -8,10 +8,13 @@ use clap::Parser;
 use mode::Mode;
 use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4, TcpListener},
+    path::PathBuf,
     str::FromStr,
     sync::Arc,
     thread,
 };
+
+use crate::mode::{MasterParams, SlaveParams};
 
 #[derive(Debug, Parser)]
 #[command(version, about, long_about = None)]
@@ -20,6 +23,10 @@ struct Cli {
     port: Option<u16>,
     #[arg(long = "replicaof", value_names = &["MASTER_HOST", "MASTER_PORT"], num_args = 2)]
     replica_of: Option<Vec<String>>,
+    #[arg(long)]
+    dir: Option<PathBuf>,
+    #[arg(long, value_name = "FILE")]
+    dbfilename: Option<String>,
 }
 
 fn main() {
@@ -27,7 +34,10 @@ fn main() {
     println!("{:?}", cli);
 
     let mode = match &cli.replica_of {
-        None => Mode::Master,
+        None => Mode::Master(MasterParams {
+            dir: cli.dir,
+            dbfilename: cli.dbfilename,
+        }),
         Some(args) => {
             assert_eq!(args.len(), 2);
             let addr = if args.get(0).unwrap() == "localhost" {
@@ -36,7 +46,9 @@ fn main() {
                 IpAddr::from_str(args.get(0).unwrap()).unwrap()
             };
             let port: u16 = args.get(1).unwrap().clone().parse().unwrap();
-            Mode::Slave(SocketAddr::new(addr, port))
+            Mode::Slave(SlaveParams {
+                master_sockaddr: SocketAddr::new(addr, port),
+            })
         }
     };
     println!("mode: {:?}", mode);
@@ -45,8 +57,8 @@ fn main() {
     let sockaddr = SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), port);
 
     match mode {
-        Mode::Master => {
-            let master = Arc::new(master::Master::new().unwrap());
+        Mode::Master(master_params) => {
+            let master = Arc::new(master::Master::new(master_params).unwrap());
             let listener = TcpListener::bind(sockaddr).unwrap();
             for stream in listener.incoming() {
                 match stream {
@@ -60,9 +72,9 @@ fn main() {
                 }
             }
         }
-        Mode::Slave(master_sockaddr) => {
+        Mode::Slave(slave_params) => {
             let listener = TcpListener::bind(sockaddr).unwrap();
-            let replica = replica::Replica::new(master_sockaddr, port).unwrap();
+            let replica = replica::Replica::new(slave_params.master_sockaddr, port).unwrap();
             for stream in listener.incoming() {
                 match stream {
                     Ok(stream) => {
