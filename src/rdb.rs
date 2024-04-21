@@ -1,3 +1,4 @@
+use crate::store::Value;
 use anyhow::Result;
 use std::{
     fs::File,
@@ -20,11 +21,6 @@ const AUX: u8 = 0xfa;
 
 mod value_code {
     pub const STRING: u8 = 0;
-}
-
-#[derive(Debug)]
-enum Value {
-    String(String),
 }
 
 fn decode_length_00(first_byte: u8) -> Result<usize> {
@@ -184,8 +180,7 @@ impl Rdb {
 
                     if exp > curr {
                         let exp_in = exp.duration_since(curr)?;
-                        let Value::String(s) = value;
-                        store.set(key, s, Some(exp_in));
+                        store.set(key, value, Some(exp_in));
                     }
                 }
                 EOF => {
@@ -200,8 +195,7 @@ impl Rdb {
                     let (key, value) = decode_key_value(value_code, &mut f)?;
                     println!("KV: {}, {:?}", key, value);
 
-                    let Value::String(s) = value;
-                    store.set(key, s, None);
+                    store.set(key, value, None);
                 }
             }
         }
@@ -289,19 +283,19 @@ mod tests {
     fn test_read() {
         let rdb = Rdb::read_from_buf(BufReader::new(&single_key_rdb()[..])).unwrap();
         assert_eq!(rdb.store.data().len(), 1);
-        assert_eq!(rdb.store.get("foo").unwrap(), "bar");
+        assert_eq!(rdb.store.get("foo").unwrap().to_string(), "bar");
 
         let rdb = Rdb::read_from_buf(BufReader::new(&multi_key_rdb()[..])).unwrap();
         assert_eq!(rdb.store.data().len(), 2);
-        assert_eq!(rdb.store.get("foo").unwrap(), "123");
-        assert_eq!(rdb.store.get("bar").unwrap(), "456");
+        assert_eq!(rdb.store.get("foo").unwrap().to_string(), "123");
+        assert_eq!(rdb.store.get("bar").unwrap().to_string(), "456");
     }
 
     #[test]
     fn test_read_exp() {
         let rdb = Rdb::read_from_buf(BufReader::new(&(with_exp_rdb())[..])).unwrap();
         assert_eq!(rdb.store.data().len(), 2);
-        assert_eq!(rdb.store.get("foo").unwrap(), "123");
-        assert_eq!(rdb.store.get("bar").unwrap(), "456");
+        assert_eq!(rdb.store.get("foo").unwrap().to_string(), "123");
+        assert_eq!(rdb.store.get("bar").unwrap().to_string(), "456");
     }
 }

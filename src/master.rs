@@ -2,7 +2,7 @@ use crate::connection::Connection;
 use crate::data::{self, Data};
 use crate::mode::MasterParams;
 use crate::rdb::Rdb;
-use crate::store::Store;
+use crate::store::{self, Store};
 use anyhow::anyhow;
 use anyhow::Result;
 use base64::Engine;
@@ -130,6 +130,59 @@ impl Master {
                             .collect();
                         conn.write_data(Data::Array(keys))?
                     }
+
+                    "get" => {
+                        let inner = self.inner.lock().unwrap();
+
+                        assert_eq!(vs.len(), 2);
+                        let key = string_at(1)?;
+                        match inner.store.get(&key) {
+                            None => conn.write_data(Data::NullBulkString)?,
+                            Some(value) => {
+                                conn.write_data(Data::BulkString(value.to_string().into()))?
+                            }
+                        }
+                    }
+                    "type" => {
+                        let inner = self.inner.lock().unwrap();
+
+                        assert_eq!(vs.len(), 2);
+                        let key = string_at(1)?;
+                        let t: String = match inner.store.get(&key) {
+                            None => "none".into(),
+                            Some(v) => v.type_string().into(),
+                        };
+                        conn.write_data(Data::SimpleString(t.into()))?
+                    }
+                    "set" => {
+                        let mut inner = self.inner.lock().unwrap();
+
+                        assert!(vs.len() == 3 || vs.len() == 5);
+                        let key = string_at(1)?;
+                        let value = string_at(2)?;
+
+                        let expire_in = if vs.len() == 5 {
+                            let px = string_at(3)?;
+                            assert_eq!(px.to_ascii_lowercase(), "px");
+                            let expire_in: u64 = string_at(4)?.parse()?;
+                            Some(Duration::from_millis(expire_in))
+                        } else {
+                            None
+                        };
+
+                        inner.store.set(key, store::Value::String(value), expire_in);
+                        conn.write_data(Data::SimpleString("OK".into()))?;
+
+                        // Replications
+                        inner
+                            .replicas
+                            .iter_mut()
+                            .map(|replica| replica.conn.write_data(Data::Array(vs.clone())))
+                            .collect::<Result<Vec<()>>>()?;
+
+                        inner.replication_offset += num_bytes;
+                        println!("replication offset: +{}", inner.replication_offset);
+                    }
                     "config" => {
                         assert_eq!(vs.len(), 3);
                         assert_eq!(vs[1].get_string().unwrap().to_ascii_lowercase(), "get");
@@ -155,45 +208,6 @@ impl Master {
                             }
                             _ => unreachable!(),
                         };
-                    }
-                    "get" => {
-                        let inner = self.inner.lock().unwrap();
-
-                        assert_eq!(vs.len(), 2);
-                        let key = string_at(1)?;
-                        match inner.store.get(&key) {
-                            None => conn.write_data(Data::NullBulkString)?,
-                            Some(value) => conn.write_data(Data::BulkString(value.into()))?,
-                        }
-                    }
-                    "set" => {
-                        let mut inner = self.inner.lock().unwrap();
-
-                        assert!(vs.len() == 3 || vs.len() == 5);
-                        let key = string_at(1)?;
-                        let value = string_at(2)?;
-
-                        let expire_in = if vs.len() == 5 {
-                            let px = string_at(3)?;
-                            assert_eq!(px.to_ascii_lowercase(), "px");
-                            let expire_in: u64 = string_at(4)?.parse()?;
-                            Some(Duration::from_millis(expire_in))
-                        } else {
-                            None
-                        };
-
-                        inner.store.set(key, value, expire_in);
-                        conn.write_data(Data::SimpleString("OK".into()))?;
-
-                        // Replications
-                        inner
-                            .replicas
-                            .iter_mut()
-                            .map(|replica| replica.conn.write_data(Data::Array(vs.clone())))
-                            .collect::<Result<Vec<()>>>()?;
-
-                        inner.replication_offset += num_bytes;
-                        println!("replication offset: +{}", inner.replication_offset);
                     }
                     "info" => match string_at(1)?.to_ascii_lowercase().as_str() {
                         "replication" => {

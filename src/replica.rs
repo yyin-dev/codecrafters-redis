@@ -1,6 +1,6 @@
 use crate::connection::Connection;
 use crate::data::Data;
-use crate::store::Store;
+use crate::store::{Store, Value};
 use anyhow::{anyhow, Result};
 use std::{
     net::{SocketAddr, TcpStream},
@@ -107,7 +107,7 @@ impl Replica {
                                     None
                                 };
 
-                                store.set(key, value, expire_in);
+                                store.set(key, Value::String(value), expire_in);
                             }
                             "REPLCONF" => {
                                 assert_eq!(vs.len(), 3);
@@ -180,7 +180,9 @@ impl Replica {
                         let key = string_at(1)?;
                         match store.get(&key) {
                             None => conn.write_data(Data::NullBulkString)?,
-                            Some(value) => conn.write_data(Data::BulkString(value.into()))?,
+                            Some(value) => {
+                                conn.write_data(Data::BulkString(value.to_string().into()))?
+                            }
                         }
                     }
                     "set" => {
@@ -199,7 +201,7 @@ impl Replica {
                             None
                         };
 
-                        store.set(key, value, expire_in);
+                        store.set(key, Value::String(value), expire_in);
                         conn.write_data(Data::SimpleString("OK".into()))?
                     }
                     "info" => match string_at(1)?.to_ascii_lowercase().as_str() {

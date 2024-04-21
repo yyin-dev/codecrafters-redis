@@ -5,12 +5,28 @@ use std::{
 };
 
 #[derive(Clone, Debug)]
-struct Value {
-    data: String,
-    expiration: Option<SystemTime>,
+pub enum Value {
+    String(String),
 }
 
 impl Value {
+    pub fn type_string(&self) -> &str {
+        "string"
+    }
+
+    pub fn to_string(&self) -> String {
+        let Self::String(s) = self; 
+        s.clone()
+    }
+}
+
+#[derive(Clone, Debug)]
+struct ValueWrapper {
+    value: Value,
+    expiration: Option<SystemTime>,
+}
+
+impl ValueWrapper {
     fn has_expired(&self) -> bool {
         match self.expiration {
             None => false,
@@ -20,7 +36,7 @@ impl Value {
 }
 
 pub struct Store {
-    map: Arc<Mutex<HashMap<String, Value>>>,
+    map: Arc<Mutex<HashMap<String, ValueWrapper>>>,
 }
 
 impl Store {
@@ -30,21 +46,18 @@ impl Store {
         }
     }
 
-    pub fn set(&self, key: String, value: String, expire_in: Option<Duration>) {
+    pub fn set(&self, key: String, value: Value, expire_in: Option<Duration>) {
         let expiration = expire_in
             .map(|expire_in| SystemTime::now().checked_add(expire_in))
             .flatten();
 
-        self.map.lock().unwrap().insert(
-            key,
-            Value {
-                data: value,
-                expiration,
-            },
-        );
+        self.map
+            .lock()
+            .unwrap()
+            .insert(key, ValueWrapper { value, expiration });
     }
 
-    pub fn get(&self, key: &str) -> Option<String> {
+    pub fn get(&self, key: &str) -> Option<Value> {
         let mut map = self.map.lock().unwrap();
 
         match map.get(key).cloned() {
@@ -54,13 +67,13 @@ impl Store {
                     map.remove(key);
                     None
                 } else {
-                    Some(value.data)
+                    Some(value.value)
                 }
             }
         }
     }
 
-    pub fn data(&self) -> HashMap<String, String> {
+    pub fn data(&self) -> HashMap<String, Value> {
         let mut map = self.map.lock().unwrap();
 
         *map = map
@@ -70,7 +83,7 @@ impl Store {
             .collect();
 
         map.iter()
-            .map(|(k, v)| (k.clone(), v.data.clone()))
+            .map(|(k, v)| (k.clone(), v.value.clone()))
             .collect()
     }
 }
