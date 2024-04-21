@@ -69,60 +69,11 @@ impl Master {
                         let handle = Arc::new(handle);
 
                         inner.replicas.push(handle.clone());
-                        drop(inner);
-
-                        self.handle_replica(handle)?;
 
                         break;
                     }
                 }
             }
-        }
-
-        Ok(())
-    }
-
-    fn handle_replica(&self, handle: Arc<ReplicaHandle>) -> Result<()> {
-        loop {
-            let res = handle.conn.read_data();
-
-            match res {
-                Err(err) => {
-                    println!("Error reading data, will close replication conn: {}", err);
-                    break;
-                }
-                Ok(data) => {
-                    if let Data::Array(vs) = data {
-                        let string_at = |idx: usize| -> Result<String> {
-                            vs[idx].get_string().ok_or(anyhow!("fail to get string"))
-                        };
-
-                        match string_at(0)?.to_ascii_uppercase().as_str() {
-                            "REPLCONF" => {
-                                assert_eq!(vs.len(), 3);
-                                assert_eq!(string_at(1)?, "ACK");
-                                let offset = string_at(2)?.parse::<usize>()?;
-
-                                let old_offset = handle
-                                    .replicated_offset
-                                    .fetch_update(
-                                        std::sync::atomic::Ordering::SeqCst,
-                                        std::sync::atomic::Ordering::SeqCst,
-                                        |_| Some(offset),
-                                    )
-                                    .unwrap();
-
-                                if old_offset < offset {
-                                    println!("Replica {}: {} -> {}", handle.id, old_offset, offset);
-                                }
-                            }
-                            _ => unreachable!(),
-                        }
-                    } else {
-                        unreachable!()
-                    }
-                }
-            };
         }
 
         Ok(())
@@ -232,17 +183,47 @@ impl Master {
                     "wait" => {
                         assert_eq!(vs.len(), 3);
 
-                        let inner = self.inner.lock().unwrap();
+                        let mut inner = self.inner.lock().unwrap();
 
-                        let num_replicas = inner.replicas.len();
                         let num_replicas_to_wait = string_at(1)?.parse::<usize>()?;
+
+                        let getack = Data::Array(vec![
+                            Data::BulkString("REPLCONF".into()),
+                            Data::BulkString("GETACK".into()),
+                            Data::BulkString("*".into()),
+                        ]);
+                        for r in inner.replicas.iter() {
+                            r.conn.write_data(getack.clone())?;
+                        }
 
                         let mut cnt = 0;
                         for r in inner.replicas.iter() {
-                            if r.replicated_offset.load(SeqCst) == inner.replication_offset {
-                                cnt += 1;
+                            let data = r.conn.read_data()?;
+                            if let Data::Array(vs) = data {
+                                let string_at = |idx: usize| -> Result<String> {
+                                    vs[idx].get_string().ok_or(anyhow!("fail to get string"))
+                                };
+
+                                match string_at(0)?.to_ascii_uppercase().as_str() {
+                                    "REPLCONF" => {
+                                        assert_eq!(vs.len(), 3);
+                                        assert_eq!(string_at(1)?, "ACK");
+                                        let offset = string_at(2)?.parse::<usize>()?;
+                                        println!("replica {}: {}", r.id, offset);
+                                        if offset == inner.replication_offset {
+                                            cnt += 1;
+                                        }
+                                    }
+                                    _ => unreachable!(),
+                                }
+                            } else {
+                                unreachable!()
                             }
                         }
+                        println!("cnt: {}", cnt);
+
+                        inner.replication_offset += getack.num_bytes();
+                        println!("replication offset: +{}", getack.num_bytes());
 
                         if num_replicas_to_wait > cnt {
                             // This is not ideal, but at least correct
@@ -250,7 +231,7 @@ impl Master {
                             thread::sleep(timeout);
                         }
 
-                        conn.write_data(Data::Integer(num_replicas as i64))?
+                        conn.write_data(Data::Integer(inner.replicas.len() as i64))?
                     }
                     command => panic!("unknown command: {}", command),
                 }
