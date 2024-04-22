@@ -8,6 +8,7 @@ const SIMPLE_STRING_DATA_TYPE: char = '+';
 const BULK_STRING_DATA_TYPE: char = '$';
 const INTEGER_DATA_TYPE: char = ':';
 const ARRAY_DATA_TYPE: char = '*';
+const SIMPLE_ERROR_DATA_TYPE: char = '-';
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Data {
@@ -16,6 +17,7 @@ pub enum Data {
     NullBulkString,
     Integer(i64),
     Array(Vec<Data>),
+    SimpleError(String),
     Unknown(Vec<u8>),
 }
 
@@ -62,6 +64,15 @@ fn encode_array(vs: Vec<Data>) -> Vec<u8> {
     for v in vs {
         res.append(&mut v.encode());
     }
+    res
+}
+
+fn encode_simple_error(err: String) -> Vec<u8> {
+    // -Error message\r\n
+    let mut res = Vec::new();
+    res.append(&mut "-".to_string().as_bytes().to_vec());
+    res.append(&mut err.into());
+    append_crlf(&mut res);
     res
 }
 
@@ -247,6 +258,28 @@ fn decode_array(buf: &[u8]) -> Result<(Data, usize)> {
     Ok((Data::Array(values), curr))
 }
 
+fn decode_simple_error(buf: &[u8]) -> Result<(Data, usize)> {
+    // -<msg>\r\n
+    if buf.len() < 3 {
+        bail!(DecodeError::NeedMoreBytes)
+    }
+
+    assert_eq!(buf[0] as char, SIMPLE_ERROR_DATA_TYPE);
+
+    let mut cr_pos = 1;
+    while cr_pos < buf.len() && buf[cr_pos] != b'\r' {
+        cr_pos += 1;
+    }
+
+    assert_eq!(buf[cr_pos], b'\r');
+    assert_eq!(buf[cr_pos + 1], b'\n');
+
+    Ok((
+        Data::SimpleError(String::from_utf8(buf[1..cr_pos].to_vec())?),
+        cr_pos + 2,
+    ))
+}
+
 pub fn decode_rdb_file(buf: &[u8]) -> Result<(Vec<u8>, usize)> {
     if buf.len() < 4 {
         bail!(DecodeError::NeedMoreBytes)
@@ -285,6 +318,7 @@ impl Data {
             Data::NullBulkString => encode_null_bulk_string(),
             Data::Integer(i) => encode_integer(*i),
             Data::Array(arr) => encode_array(arr.to_vec()),
+            Data::SimpleError(e) => encode_simple_error(e.clone()),
             Data::Unknown(_) => panic!("encode Unknown?"),
         }
     }
@@ -299,6 +333,7 @@ impl Data {
             BULK_STRING_DATA_TYPE => decode_bulk_string(buf),
             INTEGER_DATA_TYPE => decode_integer(buf),
             ARRAY_DATA_TYPE => decode_array(buf),
+            SIMPLE_ERROR_DATA_TYPE => decode_simple_error(buf),
             c => Err(anyhow::anyhow!("Unrecognized data type: {}", c)),
         }
     }
@@ -311,6 +346,7 @@ impl Data {
             Data::Array(vs) => {
                 1 + vs.len().to_string().len() + 2 + vs.iter().map(|v| v.num_bytes()).sum::<usize>()
             }
+            Data::SimpleError(e) => 1 + e.len() + 2,
             Data::Unknown(_) => usize::MAX,
             Data::Integer(i) => 1 + i.to_string().len() + 2,
         }
@@ -340,6 +376,7 @@ impl Data {
                     .collect::<Vec<String>>()
                     .join(", ")
             ),
+            Data::SimpleError(e) => format!("Error: '{}'", e),
             Data::Unknown(_) => "Unknown".into(),
             Data::Integer(_) => todo!(),
         }
@@ -397,6 +434,11 @@ mod tests {
             Data::BulkString("abc".into()),
             Data::Array(vec![Data::SimpleString("abcd".into())]),
         ]));
+    }
+
+    #[test]
+    fn simple_error() {
+        roundtrip(Data::SimpleError("error".into()));
     }
 
     #[test]

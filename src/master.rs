@@ -2,7 +2,7 @@ use crate::connection::Connection;
 use crate::data::{self, Data};
 use crate::mode::MasterParams;
 use crate::rdb::Rdb;
-use crate::store::{Store};
+use crate::store::Store;
 use crate::value::Value;
 use anyhow::anyhow;
 use anyhow::Result;
@@ -184,19 +184,30 @@ impl Master {
                     "xadd" => {
                         // xadd <stream_key> <entry-id> <e1 key> <e1 value>
                         assert!(vs.len() >= 5);
+                        assert!(vs.len() % 2 == 1);
 
                         let stream = string_at(1)?;
                         let entry_id = string_at(2)?;
 
                         let mut inner = self.inner.lock().unwrap();
                         let mut idx = 3;
+
                         while idx < vs.len() {
                             let k = string_at(idx)?;
                             let v = string_at(idx + 1)?;
 
-                            inner
-                                .store
-                                .stream_set(stream.clone(), entry_id.clone(), k, v)?;
+                            let res =
+                                inner
+                                    .store
+                                    .stream_set(stream.clone(), entry_id.clone(), k, v);
+
+                            match res {
+                                Ok(()) => (),
+                                Err(err) => {
+                                    conn.write_data(Data::SimpleError(err.to_string()))?;
+                                    return Ok(false);
+                                }
+                            }
 
                             idx += 2;
                         }

@@ -1,6 +1,11 @@
 use anyhow::{bail, Result};
 use std::{collections::BTreeMap, fmt::Display};
 
+const NOT_INCREASING_ERR_MSG: &str =
+    "ERR The ID specified in XADD is equal or smaller than the target stream top item";
+
+const MIN_ID_ERR_MSG: &str = "ERR The ID specified in XADD must be greater than 0-0";
+
 // Derived PartialEq and Eq is exactly what we want: compare `ms` and then `seq`
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct EntryId {
@@ -46,7 +51,18 @@ impl Stream {
     }
 
     pub fn append(&mut self, entry_id: EntryId, entry: Entry) -> Result<()> {
-        // TODO: validate entry_id
+        // Validate entry id is strictly increasing
+        if entry_id <= (EntryId { ms: 0, seq: 0 }) {
+            bail!(MIN_ID_ERR_MSG);
+        }
+
+        let max_entry = self.entries.iter().max_by_key(|e| e.0);
+        if let Some((max_entry_id, _)) = max_entry {
+            if &entry_id <= max_entry_id {
+                bail!(NOT_INCREASING_ERR_MSG);
+            }
+        }
+
         self.entries.insert(entry_id, entry);
         Ok(())
     }
