@@ -1,24 +1,11 @@
+use crate::stream::{Entry, EntryId, Stream};
+use crate::value::Value;
+use anyhow::Result;
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
     time::{Duration, SystemTime},
 };
-
-#[derive(Clone, Debug)]
-pub enum Value {
-    String(String),
-}
-
-impl Value {
-    pub fn type_string(&self) -> &str {
-        "string"
-    }
-
-    pub fn to_string(&self) -> String {
-        let Self::String(s) = self; 
-        s.clone()
-    }
-}
 
 #[derive(Clone, Debug)]
 struct ValueWrapper {
@@ -37,13 +24,30 @@ impl ValueWrapper {
 
 pub struct Store {
     map: Arc<Mutex<HashMap<String, ValueWrapper>>>,
+    streams: Arc<Mutex<HashMap<String, Stream>>>,
 }
 
 impl Store {
     pub fn new() -> Self {
         Store {
             map: Arc::new(Mutex::new(HashMap::new())),
+            streams: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    pub fn get_type(&self, key: String) -> String {
+        match self.get(key.as_str()) {
+            Some(v) => return v.type_string(),
+            None => {
+                let streams = self.streams.lock().unwrap();
+
+                if streams.contains_key(key.as_str()) {
+                    return "stream".into()
+                }
+            }
+        }
+
+        "none".into()
     }
 
     pub fn set(&self, key: String, value: Value, expire_in: Option<Duration>) {
@@ -71,6 +75,22 @@ impl Store {
                 }
             }
         }
+    }
+
+    pub fn stream_set(
+        &mut self,
+        stream: String,
+        entry_id: String,
+        key: String,
+        value: String,
+    ) -> Result<()> {
+        let mut streams = self.streams.lock().unwrap();
+
+        let stream = streams.entry(stream).or_insert(Stream::new());
+        let entry_id = EntryId::from_string(entry_id)?;
+        stream.append(entry_id, Entry { key, value })?;
+
+        Ok(())
     }
 
     pub fn data(&self) -> HashMap<String, Value> {

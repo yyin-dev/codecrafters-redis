@@ -1,4 +1,4 @@
-use crate::store::Value;
+use crate::value::Value;
 use anyhow::Result;
 use std::{
     fs::File,

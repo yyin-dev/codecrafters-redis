@@ -1,6 +1,8 @@
 pub mod connection;
 pub mod data;
 pub mod rdb;
+pub mod value;
+pub mod stream;
 mod master;
 mod mode;
 mod replica;

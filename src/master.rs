@@ -2,7 +2,8 @@ use crate::connection::Connection;
 use crate::data::{self, Data};
 use crate::mode::MasterParams;
 use crate::rdb::Rdb;
-use crate::store::{self, Store};
+use crate::store::{Store};
+use crate::value::Value;
 use anyhow::anyhow;
 use anyhow::Result;
 use base64::Engine;
@@ -148,10 +149,7 @@ impl Master {
 
                         assert_eq!(vs.len(), 2);
                         let key = string_at(1)?;
-                        let t: String = match inner.store.get(&key) {
-                            None => "none".into(),
-                            Some(v) => v.type_string().into(),
-                        };
+                        let t = inner.store.get_type(key);
                         conn.write_data(Data::SimpleString(t.into()))?
                     }
                     "set" => {
@@ -170,7 +168,7 @@ impl Master {
                             None
                         };
 
-                        inner.store.set(key, store::Value::String(value), expire_in);
+                        inner.store.set(key, Value::String(value), expire_in);
                         conn.write_data(Data::SimpleString("OK".into()))?;
 
                         // Replications
@@ -182,6 +180,28 @@ impl Master {
 
                         inner.replication_offset += num_bytes;
                         println!("replication offset: +{}", inner.replication_offset);
+                    }
+                    "xadd" => {
+                        // xadd <stream_key> <entry-id> <e1 key> <e1 value>
+                        assert!(vs.len() >= 5);
+
+                        let stream = string_at(1)?;
+                        let entry_id = string_at(2)?;
+
+                        let mut inner = self.inner.lock().unwrap();
+                        let mut idx = 3;
+                        while idx < vs.len() {
+                            let k = string_at(idx)?;
+                            let v = string_at(idx + 1)?;
+
+                            inner
+                                .store
+                                .stream_set(stream.clone(), entry_id.clone(), k, v)?;
+
+                            idx += 2;
+                        }
+
+                        conn.write_data(Data::BulkString(entry_id.into()))?
                     }
                     "config" => {
                         assert_eq!(vs.len(), 3);

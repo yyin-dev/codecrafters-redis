@@ -1,6 +1,7 @@
 use crate::connection::Connection;
 use crate::data::Data;
-use crate::store::{Store, Value};
+use crate::store::Store;
+use crate::value::Value;
 use anyhow::{anyhow, Result};
 use std::{
     net::{SocketAddr, TcpStream},
