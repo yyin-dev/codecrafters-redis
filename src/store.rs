@@ -83,14 +83,14 @@ impl Store {
         entry_id: String,
         key: String,
         value: String,
-    ) -> Result<()> {
+    ) -> Result<EntryId> {
         let mut streams = self.streams.lock().unwrap();
 
         let stream = streams.entry(stream).or_insert(Stream::new());
-        let entry_id = EntryId::from_string(entry_id)?;
-        stream.append(entry_id, Entry { key, value })?;
+        let entry_id = EntryId::create(entry_id, &stream.max_entry_id())?;
+        stream.append(entry_id.clone(), Entry { key, value })?;
 
-        Ok(())
+        Ok(entry_id)
     }
 
     pub fn data(&self) -> HashMap<String, Value> {

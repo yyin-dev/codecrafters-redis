@@ -190,29 +190,20 @@ impl Master {
                         let entry_id = string_at(2)?;
 
                         let mut inner = self.inner.lock().unwrap();
-                        let mut idx = 3;
 
-                        while idx < vs.len() {
-                            let k = string_at(idx)?;
-                            let v = string_at(idx + 1)?;
+                        let k = string_at(3)?;
+                        let v = string_at(4)?;
 
-                            let res =
-                                inner
-                                    .store
-                                    .stream_set(stream.clone(), entry_id.clone(), k, v);
+                        let res = inner
+                            .store
+                            .stream_set(stream.clone(), entry_id.clone(), k, v);
 
-                            match res {
-                                Ok(()) => (),
-                                Err(err) => {
-                                    conn.write_data(Data::SimpleError(err.to_string()))?;
-                                    return Ok(false);
-                                }
+                        match res {
+                            Ok(entry_id) => {
+                                conn.write_data(Data::BulkString(entry_id.to_string().into()))?
                             }
-
-                            idx += 2;
+                            Err(err) => conn.write_data(Data::SimpleError(err.to_string()))?,
                         }
-
-                        conn.write_data(Data::BulkString(entry_id.into()))?
                     }
                     "config" => {
                         assert_eq!(vs.len(), 3);
