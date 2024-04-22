@@ -1,5 +1,9 @@
 use anyhow::{bail, Result};
-use std::{collections::BTreeMap, fmt::Display};
+use std::{
+    collections::BTreeMap,
+    fmt::Display,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 const NOT_INCREASING_ERR_MSG: &str =
     "ERR The ID specified in XADD is equal or smaller than the target stream top item";
@@ -22,30 +26,36 @@ impl Display for EntryId {
 impl EntryId {
     /// Handles wildcard
     pub fn create(s: String, curr_max: &Self) -> Result<Self> {
-        let vs = s.split('-').collect::<Vec<_>>();
-        if vs.len() != 2 {
-            bail!("Expect 'ms-seq' format");
-        }
+        if s == "*" {
+            let ms = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as u64;
+            let seq = if ms == curr_max.ms { 1 } else { 0 };
+            Ok(Self { ms, seq })
+        } else {
+            let vs = s.split('-').collect::<Vec<_>>();
+            if vs.len() != 2 {
+                bail!("Expect 'ms-seq' format");
+            }
 
-        let ms = vs[0].to_string().parse()?;
-        let seq = match vs[1].to_string().parse::<u64>() {
-            Ok(ms) => ms,
-            Err(_) => {
-                assert_eq!(vs[1], "*");
+            let ms = vs[0].to_string().parse()?;
+            let seq = match vs[1].to_string().parse::<u64>() {
+                Ok(ms) => ms,
+                Err(_) => {
+                    assert_eq!(vs[1], "*");
 
-                if ms == curr_max.ms {
-                    curr_max.seq + 1
-                } else {
-                    if ms == 0 {
-                        // 0-0 is not allowed
-                        1
+                    if ms == curr_max.ms {
+                        curr_max.seq + 1
                     } else {
-                        0
+                        if ms == 0 {
+                            // 0-0 is not allowed
+                            1
+                        } else {
+                            0
+                        }
                     }
                 }
-            }
-        };
-        Ok(Self { ms, seq })
+            };
+            Ok(Self { ms, seq })
+        }
     }
 }
 

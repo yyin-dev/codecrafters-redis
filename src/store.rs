@@ -77,6 +77,8 @@ impl Store {
         }
     }
 
+    /// The `entry_id` arg might be wildcard. The returned `EntryId` is the
+    /// actually inserted id.
     pub fn stream_set(
         &mut self,
         stream: String,
