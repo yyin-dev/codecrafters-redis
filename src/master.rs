@@ -3,6 +3,7 @@ use crate::data::{self, Data};
 use crate::mode::MasterParams;
 use crate::rdb::Rdb;
 use crate::store::Store;
+use crate::stream::EntryId;
 use crate::value::Value;
 use anyhow::anyhow;
 use anyhow::Result;
@@ -182,28 +183,72 @@ impl Master {
                         println!("replication offset: +{}", inner.replication_offset);
                     }
                     "xadd" => {
-                        // xadd <stream_key> <entry-id> <e1 key> <e1 value>
+                        // xadd <stream> <entry-id> <e1 key> <e1 value>
                         assert!(vs.len() >= 5);
                         assert!(vs.len() % 2 == 1);
 
                         let stream = string_at(1)?;
                         let entry_id = string_at(2)?;
 
-                        let mut inner = self.inner.lock().unwrap();
+                        let kvs = vs[3..]
+                            .chunks_exact(2)
+                            .into_iter()
+                            .map(|data| {
+                                let k = data[0].get_string().unwrap();
+                                let v = data[1].get_string().unwrap();
+                                (k, v)
+                            })
+                            .collect();
 
-                        let k = string_at(3)?;
-                        let v = string_at(4)?;
-
-                        let res = inner
-                            .store
-                            .stream_set(stream.clone(), entry_id.clone(), k, v);
+                        let res = self.inner.lock().unwrap().store.stream_set(
+                            stream.clone(),
+                            entry_id.clone(),
+                            kvs,
+                        );
 
                         match res {
                             Ok(entry_id) => {
                                 conn.write_data(Data::BulkString(entry_id.to_string().into()))?
                             }
-                            Err(err) => conn.write_data(Data::SimpleError(err.to_string()))?,
+                            Err(err) => {
+                                conn.write_data(Data::SimpleError(err.to_string()))?;
+                                return Ok(false);
+                            }
                         }
+                    }
+                    "xrange" => {
+                        // xrange <stream> <start> <end>
+                        assert_eq!(vs.len(), 4);
+
+                        let stream = string_at(1)?;
+
+                        let entries = self.inner.lock().unwrap().store.get_stream_range(
+                            stream,
+                            EntryId::create_start(string_at(2)?)?,
+                            EntryId::create_end(string_at(3)?)?,
+                        )?;
+
+                        let resp = entries
+                            .into_iter()
+                            .map(|(entryid, entries)| {
+                                Data::Array(vec![
+                                    Data::BulkString(entryid.to_string().into()),
+                                    Data::Array(
+                                        entries
+                                            .into_iter()
+                                            .flat_map(|entry| {
+                                                vec![
+                                                    Data::BulkString(entry.key.into()),
+                                                    Data::BulkString(entry.value.into()),
+                                                ]
+                                            })
+                                            .collect(),
+                                    ),
+                                ])
+                            })
+                            .collect();
+
+                        conn.write_data(Data::Array(resp))?
                     }
                     "config" => {
                         assert_eq!(vs.len(), 3);

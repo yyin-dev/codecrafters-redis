@@ -42,7 +42,7 @@ impl Store {
                 let streams = self.streams.lock().unwrap();
 
                 if streams.contains_key(key.as_str()) {
-                    return "stream".into()
+                    return "stream".into();
                 }
             }
         }
@@ -77,20 +77,40 @@ impl Store {
         }
     }
 
+    pub fn get_stream_range(
+        &self,
+        stream: String,
+        start: EntryId,
+        end: EntryId,
+    ) -> Result<Vec<(EntryId, Vec<Entry>)>> {
+        let streams = self.streams.lock().unwrap();
+        let stream = streams.get(&stream);
+
+        match stream {
+            None => Ok(Vec::new()),
+            Some(stream) => stream.range(start, end),
+        }
+    }
+
     /// The `entry_id` arg might be wildcard. The returned `EntryId` is the
     /// actually inserted id.
     pub fn stream_set(
         &mut self,
         stream: String,
         entry_id: String,
-        key: String,
-        value: String,
+        kvs: Vec<(String, String)>,
     ) -> Result<EntryId> {
         let mut streams = self.streams.lock().unwrap();
 
         let stream = streams.entry(stream).or_insert(Stream::new());
         let entry_id = EntryId::create(entry_id, &stream.max_entry_id())?;
-        stream.append(entry_id.clone(), Entry { key, value })?;
+
+        let entries = kvs
+            .into_iter()
+            .map(|(key, value)| Entry { key, value })
+            .collect();
+
+        stream.append(entry_id.clone(), entries)?;
 
         Ok(entry_id)
     }
