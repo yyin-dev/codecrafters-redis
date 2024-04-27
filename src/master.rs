@@ -3,11 +3,12 @@ use crate::data::{self, Data};
 use crate::mode::MasterParams;
 use crate::rdb::Rdb;
 use crate::store::Store;
-use crate::stream::EntryId;
+use crate::stream::{Entry, EntryId};
 use crate::value::Value;
 use anyhow::anyhow;
 use anyhow::Result;
 use base64::Engine;
+use std::ops::Bound::{Excluded, Included};
 use std::path::PathBuf;
 use std::sync::mpsc;
 use std::{
@@ -33,6 +34,30 @@ pub struct Master {
     dbfilename: Option<String>,
     rdb: Rdb,
     inner: Arc<Mutex<MasterInner>>,
+}
+
+fn entries_to_array(entries: Vec<(EntryId, Vec<Entry>)>) -> Data {
+    let data = entries
+        .into_iter()
+        .map(|(entryid, entries)| {
+            Data::Array(vec![
+                Data::BulkString(entryid.to_string().into()),
+                Data::Array(
+                    entries
+                        .into_iter()
+                        .flat_map(|entry| {
+                            vec![
+                                Data::BulkString(entry.key.into()),
+                                Data::BulkString(entry.value.into()),
+                            ]
+                        })
+                        .collect(),
+                ),
+            ])
+        })
+        .collect();
+
+    Data::Array(data)
 }
 
 impl Master {
@@ -224,31 +249,53 @@ impl Master {
 
                         let entries = self.inner.lock().unwrap().store.get_stream_range(
                             stream,
-                            EntryId::create_start(string_at(2)?)?,
-                            EntryId::create_end(string_at(3)?)?,
+                            Included(EntryId::create_start(string_at(2)?)?),
+                            Included(EntryId::create_end(string_at(3)?)?),
                         )?;
 
-                        let resp = entries
-                            .into_iter()
-                            .map(|(entryid, entries)| {
-                                Data::Array(vec![
-                                    Data::BulkString(entryid.to_string().into()),
-                                    Data::Array(
-                                        entries
-                                            .into_iter()
-                                            .flat_map(|entry| {
-                                                vec![
-                                                    Data::BulkString(entry.key.into()),
-                                                    Data::BulkString(entry.value.into()),
-                                                ]
-                                            })
-                                            .collect(),
-                                    ),
-                                ])
-                            })
-                            .collect();
+                        conn.write_data(entries_to_array(entries))?
+                    }
+                    "xread" => {
+                        // xread streams <stream1> <entryid1> <stream2> <entryid2>
+                        assert_eq!(vs.len() % 2, 0);
 
-                        conn.write_data(Data::Array(resp))?
+                        let num_streams = (vs.len() - 2) / 2;
+
+                        let mut streams_and_start = Vec::new();
+                        for i in 2..2 + num_streams {
+                            let stream = string_at(i)?;
+                            let start = string_at(i + num_streams)?;
+                            streams_and_start.push((stream, start));
+                        }
+
+                        let inner = self.inner.lock().unwrap();
+                        let stream_and_entries = streams_and_start
+                            .into_iter()
+                            .map(|(stream, start)| {
+                                (
+                                    stream.clone(),
+                                    inner
+                                        .store
+                                        .get_stream_range(
+                                            stream,
+                                            Excluded(EntryId::create_start(start).unwrap()),
+                                            Included(EntryId::max()),
+                                        )
+                                        .unwrap(),
+                                )
+                            })
+                            .collect::<Vec<_>>();
+
+                        let as_arrays = stream_and_entries
+                            .into_iter()
+                            .map(|(stream, entries)| {
+                                let stream = Data::BulkString(stream.into());
+                                let entries = entries_to_array(entries);
+                                Data::Array(vec![stream, entries])
+                            })
+                            .collect::<Vec<_>>();
+
+                        conn.write_data(Data::Array(as_arrays))?
                     }
                     "config" => {
                         assert_eq!(vs.len(), 3);

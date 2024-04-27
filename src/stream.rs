@@ -1,5 +1,5 @@
 use anyhow::{bail, Result};
-use std::ops::Bound::Included;
+use std::ops::Bound;
 use std::{
     collections::BTreeMap,
     fmt::Display,
@@ -106,6 +106,10 @@ impl EntryId {
             Ok(Self { ms, seq: u64::MAX })
         }
     }
+
+    pub fn max() -> Self {
+        Self { ms: u64::MAX, seq: u64::MAX }
+    }    
 }
 
 #[derive(Clone, Debug)]
@@ -140,10 +144,10 @@ impl Stream {
         Ok(())
     }
 
-    pub fn range(&self, start: EntryId, end: EntryId) -> Result<Vec<(EntryId, Vec<Entry>)>> {
+    pub fn range(&self, start: Bound<EntryId>, end: Bound<EntryId>) -> Result<Vec<(EntryId, Vec<Entry>)>> {
         Ok(self
             .entries
-            .range((Included(start), Included(end)))
+            .range((start, end))
             .into_iter()
             .map(|(entryid, entry)| (entryid.clone(), entry.clone()))
             .collect())

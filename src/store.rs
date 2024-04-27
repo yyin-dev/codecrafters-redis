@@ -2,6 +2,7 @@ use crate::stream::{Entry, EntryId, Stream};
 use crate::value::Value;
 use anyhow::Result;
 use std::{
+    ops::Bound,
     collections::HashMap,
     sync::{Arc, Mutex},
     time::{Duration, SystemTime},
@@ -80,8 +81,8 @@ impl Store {
     pub fn get_stream_range(
         &self,
         stream: String,
-        start: EntryId,
-        end: EntryId,
+        start: Bound<EntryId>,
+        end: Bound<EntryId>,
     ) -> Result<Vec<(EntryId, Vec<Entry>)>> {
         let streams = self.streams.lock().unwrap();
         let stream = streams.get(&stream);
