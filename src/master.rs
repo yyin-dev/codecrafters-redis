@@ -8,6 +8,7 @@ use crate::value::Value;
 use anyhow::anyhow;
 use anyhow::Result;
 use base64::Engine;
+use crossbeam_channel::select;
 use std::ops::Bound::{Excluded, Included};
 use std::path::PathBuf;
 use std::sync::mpsc;
@@ -256,46 +257,87 @@ impl Master {
                         conn.write_data(entries_to_array(entries))?
                     }
                     "xread" => {
-                        // xread streams <stream1> <entryid1> <stream2> <entryid2>
+                        // xread [blocks <timeout>] streams <stream1> <entryid1> <stream2> <entryid2>
                         assert_eq!(vs.len() % 2, 0);
 
-                        let num_streams = (vs.len() - 2) / 2;
+                        let (timeout, stream_start_idx) = if string_at(1)? == "block" {
+                            (Some(Duration::from_millis(string_at(2)?.parse()?)), 4)
+                        } else {
+                            (None, 2)
+                        };
+                        let num_streams = (vs.len() - stream_start_idx) / 2;
 
                         let mut streams_and_start = Vec::new();
-                        for i in 2..2 + num_streams {
+                        for i in stream_start_idx..stream_start_idx + num_streams {
                             let stream = string_at(i)?;
                             let start = string_at(i + num_streams)?;
                             streams_and_start.push((stream, start));
                         }
 
-                        let inner = self.inner.lock().unwrap();
-                        let stream_and_entries = streams_and_start
-                            .into_iter()
-                            .map(|(stream, start)| {
-                                (
-                                    stream.clone(),
-                                    inner
+                        let get_stream_and_entries = || {
+                            let inner = self.inner.lock().unwrap();
+                            streams_and_start
+                                .iter()
+                                .filter_map(|(stream, start)| {
+                                    let entries = inner
                                         .store
                                         .get_stream_range(
-                                            stream,
-                                            Excluded(EntryId::create_start(start).unwrap()),
+                                            stream.clone(),
+                                            Excluded(EntryId::create_start(start.clone()).unwrap()),
                                             Included(EntryId::max()),
                                         )
-                                        .unwrap(),
-                                )
-                            })
-                            .collect::<Vec<_>>();
+                                        .unwrap();
 
-                        let as_arrays = stream_and_entries
-                            .into_iter()
-                            .map(|(stream, entries)| {
-                                let stream = Data::BulkString(stream.into());
-                                let entries = entries_to_array(entries);
-                                Data::Array(vec![stream, entries])
-                            })
-                            .collect::<Vec<_>>();
+                                    if entries.is_empty() {
+                                        None
+                                    } else {
+                                        Some((stream.clone(), entries))
+                                    }
+                                })
+                                .collect::<Vec<_>>()
+                        };
 
-                        conn.write_data(Data::Array(as_arrays))?
+                        let mut stream_and_entries = get_stream_and_entries();
+                        println!("Streams and entries: {:?}", stream_and_entries);
+
+                        if stream_and_entries.is_empty() && timeout.is_some() {
+                            // Blocks waiting
+
+                            // TODO: Handle more than one
+                            let (stream, entry_id) = streams_and_start[0].clone();
+                            let update_chan = {
+                                let mut inner = self.inner.lock().unwrap();
+                                inner
+                                    .store
+                                    .stream_subscribe(stream.clone(), entry_id.clone())
+                            };
+
+                            println!("Blocking for updates for {}, {}", stream, entry_id);
+                            select! {
+                                recv(update_chan) -> msg => match msg {
+                                    Err(err) =>  println!("Error receiving update: {}", err),
+                                    Ok(()) => {
+                                        println!("Received update, will query again...");
+                                        stream_and_entries = get_stream_and_entries();
+                                    }
+                                },
+                                default(timeout.unwrap()) => println!("Timeout!"),
+                            }
+                        }
+
+                        if stream_and_entries.is_empty() {
+                            conn.write_data(Data::NullBulkString)?
+                        } else {
+                            let as_arrays = stream_and_entries
+                                .into_iter()
+                                .map(|(stream, entries)| {
+                                    let stream = Data::BulkString(stream.into());
+                                    let entries = entries_to_array(entries);
+                                    Data::Array(vec![stream, entries])
+                                })
+                                .collect::<Vec<_>>();
+                            conn.write_data(Data::Array(as_arrays))?
+                        }
                     }
                     "config" => {
                         assert_eq!(vs.len(), 3);

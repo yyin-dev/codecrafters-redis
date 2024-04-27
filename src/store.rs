@@ -1,9 +1,10 @@
 use crate::stream::{Entry, EntryId, Stream};
 use crate::value::Value;
 use anyhow::Result;
+use crossbeam_channel::Receiver;
 use std::{
-    ops::Bound,
     collections::HashMap,
+    ops::Bound,
     sync::{Arc, Mutex},
     time::{Duration, SystemTime},
 };
@@ -114,6 +115,12 @@ impl Store {
         stream.append(entry_id.clone(), entries)?;
 
         Ok(entry_id)
+    }
+
+    pub fn stream_subscribe(&mut self, stream: String, entry_id: String) -> Receiver<()> {
+        let mut streams = self.streams.lock().unwrap();
+        let stream = streams.entry(stream).or_insert(Stream::new());
+        stream.subscribe_entries_after(EntryId::create_from_complete(entry_id).unwrap())
     }
 
     pub fn data(&self) -> HashMap<String, Value> {

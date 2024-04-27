@@ -1,5 +1,7 @@
 use anyhow::{bail, Result};
+use crossbeam_channel::{unbounded, Receiver, Sender};
 use std::ops::Bound;
+use std::ops::Bound::{Excluded, Unbounded};
 use std::{
     collections::BTreeMap,
     fmt::Display,
@@ -12,7 +14,7 @@ const NOT_INCREASING_ERR_MSG: &str =
 const MIN_ID_ERR_MSG: &str = "ERR The ID specified in XADD must be greater than 0-0";
 
 // Derived PartialEq and Eq is exactly what we want: compare `ms` and then `seq`
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct EntryId {
     ms: u64,
     seq: u64,
@@ -108,8 +110,11 @@ impl EntryId {
     }
 
     pub fn max() -> Self {
-        Self { ms: u64::MAX, seq: u64::MAX }
-    }    
+        Self {
+            ms: u64::MAX,
+            seq: u64::MAX,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -121,12 +126,14 @@ pub struct Entry {
 #[derive(Debug)]
 pub struct Stream {
     entries: BTreeMap<EntryId, Vec<Entry>>,
+    subscribers: BTreeMap<EntryId, Sender<()>>,
 }
 
 impl Stream {
     pub fn new() -> Self {
         Self {
             entries: BTreeMap::new(),
+            subscribers: BTreeMap::new(),
         }
     }
 
@@ -140,11 +147,32 @@ impl Stream {
             bail!(NOT_INCREASING_ERR_MSG);
         }
 
-        self.entries.insert(entry_id, entries);
+        self.entries.insert(entry_id.clone(), entries);
+
+        // Notify subscribers, if any
+        let subscribers = self
+            .subscribers
+            .range((Unbounded, Excluded(entry_id.clone())))
+            .map(|(e, tx)| {
+                tx.send(()).unwrap();
+                e.clone()
+            })
+            .collect::<Vec<_>>();
+
+        for entryid in subscribers {
+            self.subscribers.remove(&entryid);
+        }
+
+        self.subscribers.remove(&entry_id);
+
         Ok(())
     }
 
-    pub fn range(&self, start: Bound<EntryId>, end: Bound<EntryId>) -> Result<Vec<(EntryId, Vec<Entry>)>> {
+    pub fn range(
+        &self,
+        start: Bound<EntryId>,
+        end: Bound<EntryId>,
+    ) -> Result<Vec<(EntryId, Vec<Entry>)>> {
         Ok(self
             .entries
             .range((start, end))
@@ -159,6 +187,12 @@ impl Stream {
             .max_by_key(|e| e.0)
             .map(|v| v.0.clone())
             .unwrap_or(EntryId { ms: 0, seq: 0 })
+    }
+
+    pub fn subscribe_entries_after(&mut self, entryid: EntryId) -> Receiver<()> {
+        let (rx, tx) = unbounded();
+        self.subscribers.insert(entryid, rx);
+        tx
     }
 }
 
