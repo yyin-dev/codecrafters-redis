@@ -92,6 +92,13 @@ impl Store {
         }
     }
 
+    pub fn get_stream_curr_max_id(&self, stream: String) -> EntryId {
+        let mut streams = self.streams.lock().unwrap();
+
+        let stream = streams.entry(stream).or_insert(Stream::new());
+        stream.max_entry_id()
+    }
+
     /// The `entry_id` arg might be wildcard. The returned `EntryId` is the
     /// actually inserted id.
     pub fn stream_set(
@@ -115,10 +122,10 @@ impl Store {
         Ok(entry_id)
     }
 
-    pub fn stream_subscribe(&mut self, stream: String, entry_id: String) -> Receiver<()> {
+    pub fn stream_subscribe(&mut self, stream: String, entry_id: EntryId) -> Receiver<()> {
         let mut streams = self.streams.lock().unwrap();
         let stream = streams.entry(stream).or_insert(Stream::new());
-        stream.subscribe_entries_after(EntryId::create_from_complete(entry_id).unwrap())
+        stream.subscribe_entries_after(entry_id)
     }
 
     pub fn data(&self) -> HashMap<String, Value> {

@@ -9,6 +9,7 @@ use anyhow::anyhow;
 use anyhow::Result;
 use base64::Engine;
 use crossbeam_channel::select;
+use std::collections::HashMap;
 use std::ops::Bound::{Excluded, Included};
 use std::path::PathBuf;
 use std::sync::mpsc;
@@ -277,16 +278,35 @@ impl Master {
                             streams_and_start.push((stream, start));
                         }
 
-                        let get_stream_and_entries = || {
+                        let mut curr_max_entry_ids = HashMap::new();
+                        {
+                            let inner = self.inner.lock().unwrap();
+                            streams_and_start.iter().for_each(|(stream, _)| {
+                                let curr_max = inner.store.get_stream_curr_max_id(stream.clone());
+                                curr_max_entry_ids.insert(stream.clone(), curr_max);
+                            });
+                        }
+
+                        let get_stream_and_entries = |convert_wildcard: bool| {
                             let inner = self.inner.lock().unwrap();
                             streams_and_start
                                 .iter()
                                 .filter_map(|(stream, start)| {
+                                    let start = if start == "$" {
+                                        if convert_wildcard {
+                                            curr_max_entry_ids.get(stream).unwrap().clone()
+                                        } else {
+                                            return None;
+                                        }
+                                    } else {
+                                        EntryId::create_start(start.clone()).unwrap()
+                                    };
+
                                     let entries = inner
                                         .store
                                         .get_stream_range(
                                             stream.clone(),
-                                            Excluded(EntryId::create_start(start.clone()).unwrap()),
+                                            Excluded(start),
                                             Included(EntryId::max()),
                                         )
                                         .unwrap();
@@ -300,7 +320,7 @@ impl Master {
                                 .collect::<Vec<_>>()
                         };
 
-                        let mut stream_and_entries = get_stream_and_entries();
+                        let mut stream_and_entries = get_stream_and_entries(false);
                         println!("Streams and entries: {:?}", stream_and_entries);
 
                         if stream_and_entries.is_empty() && timeout.is_some() {
@@ -310,6 +330,11 @@ impl Master {
                             let (stream, entry_id) = streams_and_start[0].clone();
                             let update_chan = {
                                 let mut inner = self.inner.lock().unwrap();
+                                let entry_id = if entry_id == "$" {
+                                    inner.store.get_stream_curr_max_id(stream.clone())
+                                } else {
+                                    EntryId::create_start(entry_id.clone()).unwrap()
+                                };
                                 inner
                                     .store
                                     .stream_subscribe(stream.clone(), entry_id.clone())
@@ -321,7 +346,7 @@ impl Master {
                                     Err(err) =>  println!("Error receiving update: {}", err),
                                     Ok(()) => {
                                         println!("Received update, will query again...");
-                                        stream_and_entries = get_stream_and_entries();
+                                        stream_and_entries = get_stream_and_entries(true);
                                     }
                                 },
                                 default(timeout.unwrap()) => println!("Timeout!"),
