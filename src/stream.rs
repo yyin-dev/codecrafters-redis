@@ -77,8 +77,11 @@ impl EntryId {
     // Create a start entry-id, handles:
     // <ms>-<seq>
     // <ms>
+    // -
     pub fn create_start(s: String) -> Result<Self> {
-        if s.contains("-") {
+        if s == "-" {
+            Ok(Self { ms: 0, seq: 0 })
+        } else if s.contains("-") {
             Self::create_from_complete(s)
         } else {
             let ms: u64 = s.parse()?;
