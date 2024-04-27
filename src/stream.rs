@@ -92,8 +92,14 @@ impl EntryId {
     // Create an end entry-id, handles:
     // <ms>-<seq>
     // <ms>
+    // +
     pub fn create_end(s: String) -> Result<Self> {
-        if s.contains("-") {
+        if s == "+" {
+            Ok(Self {
+                ms: u64::MAX,
+                seq: u64::MAX,
+            })
+        } else if s.contains("-") {
             Self::create_from_complete(s)
         } else {
             let ms: u64 = s.parse()?;
