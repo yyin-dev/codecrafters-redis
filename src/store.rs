@@ -53,9 +53,7 @@ impl Store {
     }
 
     pub fn set(&self, key: String, value: Value, expire_in: Option<Duration>) {
-        let expiration = expire_in
-            .map(|expire_in| SystemTime::now().checked_add(expire_in))
-            .flatten();
+        let expiration = expire_in.and_then(|expire_in| SystemTime::now().checked_add(expire_in));
 
         self.map
             .lock()

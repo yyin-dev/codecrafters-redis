@@ -43,10 +43,10 @@ fn main() {
         }),
         Some(args) => {
             assert_eq!(args.len(), 2);
-            let addr = if args.get(0).unwrap() == "localhost" {
+            let addr = if args.first().unwrap() == "localhost" {
                 IpAddr::from_str("127.0.0.1").unwrap()
             } else {
-                IpAddr::from_str(args.get(0).unwrap()).unwrap()
+                IpAddr::from_str(args.first().unwrap()).unwrap()
             };
             let port: u16 = args.get(1).unwrap().clone().parse().unwrap();
             Mode::Slave(SlaveParams {

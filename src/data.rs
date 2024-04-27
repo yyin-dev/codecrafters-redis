@@ -22,7 +22,7 @@ pub enum Data {
 }
 
 fn append_crlf(s: &mut Vec<u8>) {
-    s.append(&mut vec!['\r' as u8, '\n' as u8])
+    s.append(&mut vec![b'\r', b'\n'])
 }
 
 fn encode_simple_string(mut s: Vec<u8>) -> Vec<u8> {
@@ -49,7 +49,7 @@ fn encode_null_bulk_string() -> Vec<u8> {
 
 fn encode_integer(i: i64) -> Vec<u8> {
     let mut res = Vec::new();
-    res.push(':' as u8);
+    res.push(b':');
     res.append(&mut i.to_string().as_bytes().to_vec());
     append_crlf(&mut res);
     res
@@ -324,7 +324,7 @@ impl Data {
     }
 
     pub fn decode(buf: &[u8]) -> Result<(Self, usize)> {
-        if buf.len() == 0 {
+        if buf.is_empty() {
             bail!(DecodeError::NeedMoreBytes)
         }
 

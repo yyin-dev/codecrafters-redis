@@ -153,7 +153,6 @@ impl Master {
                             .store
                             .data()
                             .keys()
-                            .into_iter()
                             .map(|k| Data::BulkString(k.as_str().into()))
                             .collect();
                         conn.write_data(Data::Array(keys))?
@@ -218,7 +217,6 @@ impl Master {
 
                         let kvs = vs[3..]
                             .chunks_exact(2)
-                            .into_iter()
                             .map(|data| {
                                 let k = data[0].get_string().unwrap();
                                 let v = data[1].get_string().unwrap();
@@ -374,9 +372,7 @@ impl Master {
                                 format!("master_repl_offset:{}", inner.replication_offset);
 
                             conn.write_data(Data::BulkString(
-                                vec![role, replication_id, replication_offset]
-                                    .join("\n")
-                                    .into(),
+                                [role, replication_id, replication_offset].join("\n").into(),
                             ))?
                         }
                         info_type => panic!("unknown info type: {}", info_type),
@@ -508,10 +504,7 @@ impl Master {
                                             *cnt += 1;
 
                                             if *cnt == num_replicas_to_wait {
-                                                match tx.send(()) {
-                                                    Ok(()) => (),
-                                                    Err(_) => (),
-                                                };
+                                                tx.send(()).unwrap();
                                                 break;
                                             }
                                         };

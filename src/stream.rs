@@ -62,13 +62,11 @@ impl EntryId {
 
                     if ms == curr_max.ms {
                         curr_max.seq + 1
+                    } else if ms == 0 {
+                        // 0-0 is not allowed
+                        1
                     } else {
-                        if ms == 0 {
-                            // 0-0 is not allowed
-                            1
-                        } else {
-                            0
-                        }
+                        0
                     }
                 }
             };
@@ -83,7 +81,7 @@ impl EntryId {
     pub fn create_start(s: String) -> Result<Self> {
         if s == "-" {
             Ok(Self { ms: 0, seq: 0 })
-        } else if s.contains("-") {
+        } else if s.contains('-') {
             Self::create_from_complete(s)
         } else {
             let ms: u64 = s.parse()?;
@@ -101,7 +99,7 @@ impl EntryId {
                 ms: u64::MAX,
                 seq: u64::MAX,
             })
-        } else if s.contains("-") {
+        } else if s.contains('-') {
             Self::create_from_complete(s)
         } else {
             let ms: u64 = s.parse()?;
@@ -176,7 +174,6 @@ impl Stream {
         Ok(self
             .entries
             .range((start, end))
-            .into_iter()
             .map(|(entryid, entry)| (entryid.clone(), entry.clone()))
             .collect())
     }

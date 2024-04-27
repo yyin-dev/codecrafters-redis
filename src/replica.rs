@@ -63,7 +63,7 @@ impl Replica {
 
         println!("Finished handshaking!");
         let replica = Arc::new(Self {
-            master_replication_id: master_replication_id.into(),
+            master_replication_id,
             replication_offset: Arc::new(Mutex::new(0)),
             store: Arc::new(Mutex::new(Store::new())),
         });
@@ -216,9 +216,7 @@ impl Replica {
                             );
 
                             conn.write_data(Data::BulkString(
-                                vec![role, replication_id, replication_offset]
-                                    .join("\n")
-                                    .into(),
+                                [role, replication_id, replication_offset].join("\n").into(),
                             ))?
                         }
                         info_type => panic!("unknown info type: {}", info_type),
