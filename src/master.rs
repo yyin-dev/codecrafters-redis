@@ -259,7 +259,12 @@ impl Master {
                         assert_eq!(vs.len() % 2, 0);
 
                         let (timeout, stream_start_idx) = if string_at(1)? == "block" {
-                            (Some(Duration::from_millis(string_at(2)?.parse()?)), 4)
+                            let mill = match string_at(2)?.parse::<u64>()? {
+                                0 => u64::MAX,
+                                mill => mill,
+                            };
+
+                            (Some(Duration::from_millis(mill)), 4)
                         } else {
                             (None, 2)
                         };
